@@ -1,0 +1,161 @@
+*zeroxzero.txt*    Neovim plugin for 0x0 AI coding assistant
+
+==============================================================================
+CONTENTS                                              *zeroxzero-contents*
+
+  1. Introduction ........................... |zeroxzero-intro|
+  2. Setup .................................. |zeroxzero-setup|
+  3. Commands ............................... |zeroxzero-commands|
+  4. Keymaps ................................ |zeroxzero-keymaps|
+  5. Configuration .......................... |zeroxzero-config|
+  6. Statusline ............................. |zeroxzero-statusline|
+  7. Health Check ........................... |zeroxzero-health|
+
+==============================================================================
+1. INTRODUCTION                                       *zeroxzero-intro*
+
+0x0.nvim is a Neovim plugin that integrates with the 0x0 AI coding
+assistant. It spawns 0x0's TUI in a Neovim terminal, injects editor
+context via HTTP, and reacts to SSE events for file reloads, permissions,
+and notifications.
+
+The plugin acts as a bridge — it does not duplicate the chat UI. Instead
+it enhances the TUI with editor context (file references, selections,
+diagnostics).
+
+All commands, agents, and skills are defined in your config.yaml and
+.zeroxzero/ directory. The plugin fetches them from the server at
+runtime — no built-in prompts or agent definitions.
+
+==============================================================================
+2. SETUP                                              *zeroxzero-setup*
+
+Using lazy.nvim: >lua
+  {
+    "0x0/0x0.nvim",
+    opts = {},
+  }
+<
+
+Using packer.nvim: >lua
+  use {
+    "0x0/0x0.nvim",
+    config = function()
+      require("zeroxzero").setup()
+    end,
+  }
+<
+
+Manual setup: >lua
+  require("zeroxzero").setup({
+    -- see |zeroxzero-config| for options
+  })
+<
+
+==============================================================================
+3. COMMANDS                                           *zeroxzero-commands*
+
+Terminal management:
+  :ZeroOpen                    Open 0x0 terminal (start if needed)
+  :ZeroToggle                  Toggle 0x0 terminal visibility
+  :ZeroClose                   Hide 0x0 terminal
+
+Context injection:
+  :ZeroAddFile                 Add current file reference to prompt
+  :ZeroAddSelection            Add visual selection to prompt
+
+Asking:
+  :ZeroAsk [prompt]            Open input or submit prompt directly
+
+Session management:
+  :ZeroSessionList             List and pick a session
+  :ZeroSessionNew              Create a new session
+  :ZeroSessionInterrupt        Interrupt current session
+
+Model:
+  :ZeroModelList               Open model picker in TUI
+
+Commands & Agents (from config.yaml):
+  :ZeroCommandPicker           Pick from available commands
+  :ZeroAgentPicker             Pick from available agents
+
+==============================================================================
+4. KEYMAPS                                            *zeroxzero-keymaps*
+
+Default keymaps (configurable via setup):
+
+  <leader>0      Normal      Toggle terminal
+  <leader>0a     Normal      Ask prompt
+  <leader>0a     Visual      Ask with selection context
+  <leader>0f     Normal      Add current file to prompt
+  <leader>0s     Visual      Add selection to prompt
+  <leader>0l     Normal      List sessions
+  <leader>0n     Normal      New session
+  <leader>0i     Normal      Interrupt session
+  <leader>0m     Normal      List models
+  <leader>0c     Normal/Vis  Command picker
+  <leader>0g     Normal      Agent picker
+
+To disable all keymaps, set each to empty string in setup.
+
+==============================================================================
+5. CONFIGURATION                                      *zeroxzero-config*
+
+Default configuration: >lua
+  require("zeroxzero").setup({
+    cmd = "0x0",                    -- Path to 0x0 binary
+    args = {},                      -- Extra CLI arguments
+    port = 0,                       -- 0 = random port
+    hostname = "127.0.0.1",         -- Server hostname
+    auto_start = true,              -- Auto-start on first command
+    terminal = {
+      position = "vsplit",          -- "vsplit"|"split"|"float"|"tab"
+      size = 80,                    -- Width (vsplit) or height (split)
+      float_opts = {
+        width = 0.8,                -- Float width (0-1 = ratio)
+        height = 0.8,               -- Float height (0-1 = ratio)
+        border = "rounded",         -- Float border style
+      },
+    },
+    keymaps = {
+      toggle = "<leader>0",
+      ask = "<leader>0a",
+      add_file = "<leader>0f",
+      add_selection = "<leader>0s",
+      session_list = "<leader>0l",
+      session_new = "<leader>0n",
+      session_interrupt = "<leader>0i",
+      model_list = "<leader>0m",
+      command_picker = "<leader>0c",
+      agent_picker = "<leader>0g",
+    },
+    auth = nil,                     -- { username = "...", password = "..." }
+  })
+<
+
+==============================================================================
+6. STATUSLINE                                         *zeroxzero-statusline*
+
+Add 0x0 status to your statusline: >lua
+  -- lualine example
+  sections = {
+    lualine_x = {
+      { function() return require("zeroxzero").statusline() end },
+    },
+  }
+<
+
+Returns a string like "0x0 | connected | Session Title" when connected,
+or empty string when not connected.
+
+==============================================================================
+7. HEALTH CHECK                                       *zeroxzero-health*
+
+Run `:checkhealth zeroxzero` to verify your setup:
+  - Neovim >= 0.10
+  - curl available
+  - 0x0 binary found
+  - Server connectivity
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:

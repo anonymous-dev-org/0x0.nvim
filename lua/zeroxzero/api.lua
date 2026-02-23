@@ -1,0 +1,192 @@
+local config = require("zeroxzero.config")
+
+local M = {}
+
+---@param method string
+---@param path string
+---@param opts? {body?: table, timeout?: number}
+---@param callback fun(err?: string, response?: {status: number, body: any})
+function M.request(method, path, opts, callback)
+  opts = opts or {}
+  local cfg = config.current
+  local url = string.format("http://%s:%d%s", cfg.hostname, cfg.port, path)
+
+  local cmd = { "curl", "-s", "-w", "\n%{http_code}", "-X", method }
+
+  if cfg.auth then
+    table.insert(cmd, "-u")
+    table.insert(cmd, cfg.auth.username .. ":" .. cfg.auth.password)
+  end
+
+  if opts.body then
+    table.insert(cmd, "-H")
+    table.insert(cmd, "Content-Type: application/json")
+    table.insert(cmd, "-d")
+    table.insert(cmd, vim.json.encode(opts.body))
+  end
+
+  if opts.timeout then
+    table.insert(cmd, "--max-time")
+    table.insert(cmd, tostring(opts.timeout))
+  end
+
+  table.insert(cmd, url)
+
+  vim.system(cmd, { text = true }, function(result)
+    vim.schedule(function()
+      if result.code ~= 0 then
+        callback("curl failed (exit " .. result.code .. "): " .. (result.stderr or ""))
+        return
+      end
+
+      local output = result.stdout or ""
+      local lines = vim.split(output, "\n", { trimempty = true })
+      if #lines == 0 then
+        callback("empty response")
+        return
+      end
+
+      local status_code = tonumber(lines[#lines])
+      table.remove(lines, #lines)
+      local body_str = table.concat(lines, "\n")
+
+      local body
+      if body_str ~= "" then
+        local ok, decoded = pcall(vim.json.decode, body_str)
+        body = ok and decoded or body_str
+      end
+
+      callback(nil, { status = status_code or 0, body = body })
+    end)
+  end)
+end
+
+---@param method string
+---@param path string
+---@param opts? {body?: table, timeout?: number}
+---@return string? err
+---@return {status: number, body: any}? response
+function M.request_sync(method, path, opts)
+  opts = opts or {}
+  local cfg = config.current
+  local url = string.format("http://%s:%d%s", cfg.hostname, cfg.port, path)
+
+  local cmd = { "curl", "-s", "-w", "\n%{http_code}", "-X", method }
+
+  if cfg.auth then
+    table.insert(cmd, "-u")
+    table.insert(cmd, cfg.auth.username .. ":" .. cfg.auth.password)
+  end
+
+  if opts.body then
+    table.insert(cmd, "-H")
+    table.insert(cmd, "Content-Type: application/json")
+    table.insert(cmd, "-d")
+    table.insert(cmd, vim.json.encode(opts.body))
+  end
+
+  if opts.timeout then
+    table.insert(cmd, "--max-time")
+    table.insert(cmd, tostring(opts.timeout))
+  end
+
+  table.insert(cmd, url)
+
+  local result = vim.system(cmd, { text = true }):wait()
+
+  if result.code ~= 0 then
+    return "curl failed (exit " .. result.code .. "): " .. (result.stderr or "")
+  end
+
+  local output = result.stdout or ""
+  local lines = vim.split(output, "\n", { trimempty = true })
+  if #lines == 0 then
+    return "empty response"
+  end
+
+  local status_code = tonumber(lines[#lines])
+  table.remove(lines, #lines)
+  local body_str = table.concat(lines, "\n")
+
+  local body
+  if body_str ~= "" then
+    local ok, decoded = pcall(vim.json.decode, body_str)
+    body = ok and decoded or body_str
+  end
+
+  return nil, { status = status_code or 0, body = body }
+end
+
+-- Convenience wrappers
+
+function M.get(path, callback)
+  M.request("GET", path, nil, callback)
+end
+
+function M.post(path, body, callback)
+  M.request("POST", path, { body = body }, callback)
+end
+
+function M.patch(path, body, callback)
+  M.request("PATCH", path, { body = body }, callback)
+end
+
+function M.delete(path, callback)
+  M.request("DELETE", path, nil, callback)
+end
+
+-- Domain-specific wrappers
+
+function M.health(callback)
+  M.request("GET", "/app", { timeout = 2 }, callback)
+end
+
+function M.append_prompt(text, callback)
+  M.post("/tui/append-prompt", { text = text }, callback)
+end
+
+function M.submit_prompt(callback)
+  M.post("/tui/submit-prompt", nil, callback)
+end
+
+function M.clear_prompt(callback)
+  M.post("/tui/clear-prompt", nil, callback)
+end
+
+function M.execute_command(alias, callback)
+  M.post("/tui/execute-command", { command = alias }, callback)
+end
+
+function M.get_sessions(callback)
+  M.get("/session/", callback)
+end
+
+function M.select_session(session_id, callback)
+  M.post("/tui/select-session", { sessionID = session_id }, callback)
+end
+
+function M.reply_permission(request_id, reply, callback)
+  M.post("/permission/" .. request_id .. "/reply", { reply = reply }, callback)
+end
+
+function M.reply_question(request_id, answers, callback)
+  M.post("/question/" .. request_id .. "/reply", { answers = answers }, callback)
+end
+
+function M.reject_question(request_id, callback)
+  M.post("/question/" .. request_id .. "/reject", nil, callback)
+end
+
+function M.get_commands(callback)
+  M.get("/command", callback)
+end
+
+function M.get_agents(callback)
+  M.get("/agent", callback)
+end
+
+function M.get_skills(callback)
+  M.get("/skill", callback)
+end
+
+return M
