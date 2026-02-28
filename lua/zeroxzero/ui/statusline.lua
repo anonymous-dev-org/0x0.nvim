@@ -6,6 +6,20 @@ M._status = ""
 ---@type string?
 M._session_title = nil
 
+local _frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+
+---@type table<string, true>
+local _busy = {}
+
+---@type table<string, string>
+local _phase = {}
+
+---@type integer
+local _frame = 1
+
+---@type uv_timer_t?
+local _timer = nil
+
 ---Update status from SSE events
 function M._setup()
   local ok, sse = pcall(require, "zeroxzero.sse")
@@ -22,6 +36,42 @@ function M._setup()
       M._session_title = props.title
     end
   end)
+
+  sse.on("session.status", function(props)
+    if not props or not props.sessionID or not props.status then
+      return
+    end
+
+    local session_id = props.sessionID
+    local status = props.status
+
+    if status.type == "busy" then
+      _busy[session_id] = true
+      _phase[session_id] = status.phase or "thinking"
+
+      if not _timer then
+        _timer = vim.uv.new_timer()
+        _timer:start(80, 80, function()
+          vim.schedule(function()
+            _frame = (_frame % #_frames) + 1
+            vim.cmd("redrawstatus")
+          end)
+        end)
+      end
+    else
+      _busy[session_id] = nil
+      _phase[session_id] = nil
+
+      if not next(_busy) and _timer then
+        _timer:stop()
+        _timer:close()
+        _timer = nil
+        vim.schedule(function()
+          vim.cmd("redrawstatus")
+        end)
+      end
+    end
+  end)
 end
 
 ---Get statusline string
@@ -34,7 +84,11 @@ function M.get()
 
   local parts = { "0x0" }
 
-  if M._status ~= "" then
+  if next(_busy) then
+    local session_id = next(_busy)
+    local phase = _phase[session_id] or "thinking"
+    table.insert(parts, _frames[_frame] .. " " .. phase)
+  elseif M._status ~= "" then
     table.insert(parts, M._status)
   end
 

@@ -26,3 +26,6 @@ command! ZeroModelList lua require('zeroxzero').model_list()
 " Commands & Agents (fetched from server, defined in config.yaml)
 command! ZeroCommandPicker lua require('zeroxzero').command_picker()
 command! ZeroAgentPicker   lua require('zeroxzero').agent_picker()
+
+" Inline edit
+command! ZeroInlineEdit lua require('zeroxzero').inline_edit()

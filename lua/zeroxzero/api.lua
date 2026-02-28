@@ -189,4 +189,47 @@ function M.get_skills(callback)
   M.get("/skill", callback)
 end
 
+-- Inline edit session management
+
+function M.create_session(callback)
+  M.request("POST", "/session/", nil, function(err, response)
+    if err then
+      callback(err)
+      return
+    end
+    if not response or response.status ~= 200 or not response.body or not response.body.id then
+      callback("unexpected response from /session/: " .. vim.inspect(response))
+      return
+    end
+    callback(nil, response.body.id)
+  end)
+end
+
+---@param session_id string
+function M.delete_session(session_id)
+  M.request("DELETE", "/session/" .. session_id, nil, function() end)
+end
+
+---@param session_id string
+---@param text string
+---@param callback fun(err?: string)
+function M.send_message(session_id, text, callback)
+  M.request(
+    "POST",
+    "/session/" .. session_id .. "/message",
+    { body = { parts = { { type = "text", text = text } } }, timeout = 120 },
+    function(err, response)
+      if err then
+        callback(err)
+        return
+      end
+      if not response or (response.status ~= 200 and response.status ~= 204) then
+        callback("unexpected status " .. tostring(response and response.status))
+        return
+      end
+      callback(nil)
+    end
+  )
+end
+
 return M

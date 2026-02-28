@@ -26,6 +26,7 @@ local M = {}
 ---@field model_list string
 ---@field command_picker string
 ---@field agent_picker string
+---@field inline_edit string
 
 ---@type zeroxzero.Config
 M.defaults = {
@@ -54,6 +55,7 @@ M.defaults = {
     model_list = "<leader>0m",
     command_picker = "<leader>0c",
     agent_picker = "<leader>0g",
+    inline_edit = "<leader>0e",
   },
   auth = nil,
 }

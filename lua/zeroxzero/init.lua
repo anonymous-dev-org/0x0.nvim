@@ -78,6 +78,17 @@ function M.setup(opts)
     end, { desc = "0x0: Agent picker" })
   end
 
+  if km.inline_edit and km.inline_edit ~= "" then
+    vim.keymap.set("n", km.inline_edit, function()
+      M.inline_edit()
+    end, { desc = "0x0: Inline edit" })
+    vim.keymap.set("v", km.inline_edit, function()
+      M.inline_edit_visual()
+    end, { desc = "0x0: Inline edit with selection" })
+  end
+
+  vim.api.nvim_set_hl(0, "ZeroInlineWorking", { link = "DiffChange", default = true })
+
   -- Autocommands
   local group = vim.api.nvim_create_augroup("zeroxzero", { clear = true })
   vim.api.nvim_create_autocmd("VimLeavePre", {
@@ -231,6 +242,16 @@ end
 
 function M.agent_picker()
   require("zeroxzero.ui.picker").agent_picker()
+end
+
+-- Inline edit
+
+function M.inline_edit()
+  require("zeroxzero.inline_edit").edit()
+end
+
+function M.inline_edit_visual()
+  require("zeroxzero.inline_edit").edit_visual()
 end
 
 -- Statusline
