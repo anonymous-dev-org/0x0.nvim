@@ -1,11 +1,11 @@
 local api = require("zeroxzero.api")
-local process = require("zeroxzero.process")
+local server = require("zeroxzero.server")
 
 local M = {}
 
 ---Pick a session from the list and switch to it
 function M.session_picker()
-  process.ensure(function(err)
+  server.ensure(function(err)
     if err then
       vim.notify("0x0: " .. err, vim.log.levels.ERROR)
       return
@@ -39,37 +39,72 @@ function M.session_picker()
         if not choice then
           return
         end
-        api.select_session(choice.id, function(select_err)
-          if select_err then
-            vim.notify("0x0: " .. select_err, vim.log.levels.ERROR)
-          end
-        end)
+        local chat = require("zeroxzero.chat")
+        chat.switch_session(choice.id)
+        chat.open()
       end)
     end)
   end)
 end
 
----Open model picker via TUI command
+---Pick a model from available providers
 function M.model_picker()
-  process.ensure(function(err)
+  server.ensure(function(err)
     if err then
       vim.notify("0x0: " .. err, vim.log.levels.ERROR)
       return
     end
-    api.execute_command("model_list", function(cmd_err)
-      if cmd_err then
-        vim.notify("0x0: " .. cmd_err, vim.log.levels.ERROR)
-      else
-        process.show()
+
+    api.get_providers(function(get_err, response)
+      if get_err then
+        vim.notify("0x0: " .. get_err, vim.log.levels.ERROR)
+        return
       end
+
+      local providers = response and response.body or {}
+      if type(providers) ~= "table" or #providers == 0 then
+        vim.notify("0x0: no providers found", vim.log.levels.INFO)
+        return
+      end
+
+      -- Build flat list of provider + model combos
+      local items = {}
+      for _, provider in ipairs(providers) do
+        local models = provider.models or {}
+        for _, model in ipairs(models) do
+          table.insert(items, {
+            providerID = provider.id,
+            modelID = model.id or model,
+            label = (provider.id or "?") .. "/" .. (model.id or model),
+          })
+        end
+      end
+
+      if #items == 0 then
+        vim.notify("0x0: no models found", vim.log.levels.INFO)
+        return
+      end
+
+      vim.ui.select(items, {
+        prompt = "Models",
+        format_item = function(item)
+          return item.label
+        end,
+      }, function(choice)
+        if not choice then
+          return
+        end
+        local chat = require("zeroxzero.chat")
+        chat.set_model({ providerID = choice.providerID, modelID = choice.modelID })
+        vim.notify("0x0: model set to " .. choice.label, vim.log.levels.INFO)
+      end)
     end)
   end)
 end
 
----Pick a command from the server and execute it via the TUI
----Commands come from config.yaml, .zeroxzero/commands/*.md, MCP prompts, and skills
+---Pick a command from the server and send it as a prompt
 function M.command_picker()
-  process.ensure(function(err)
+  server.ensure(function(err)
     if err then
       vim.notify("0x0: " .. err, vim.log.levels.ERROR)
       return
@@ -92,7 +127,7 @@ function M.command_picker()
         format_item = function(item)
           local label = item.name or "unknown"
           if item.description and item.description ~= "" then
-            label = label .. " — " .. item.description
+            label = label .. " \u{2014} " .. item.description
           end
           if item.source then
             label = label .. " [" .. item.source .. "]"
@@ -106,48 +141,28 @@ function M.command_picker()
 
         local name = choice.name
         local hints = choice.hints or {}
+        local chat = require("zeroxzero.chat")
 
         if #hints > 0 then
-          -- Command has placeholders — prompt for arguments
           vim.ui.input({
             prompt = "0x0 /" .. name .. "> ",
           }, function(args)
             if not args then
               return
             end
-            local text = "/" .. name .. " " .. args
-            api.clear_prompt(function()
-              api.append_prompt(text, function(append_err)
-                if append_err then
-                  vim.notify("0x0: " .. append_err, vim.log.levels.ERROR)
-                  return
-                end
-                api.submit_prompt(function() end)
-              end)
-            end)
+            chat.send("/" .. name .. " " .. args)
           end)
         else
-          -- No arguments needed — submit directly
-          local text = "/" .. name
-          api.clear_prompt(function()
-            api.append_prompt(text, function(append_err)
-              if append_err then
-                vim.notify("0x0: " .. append_err, vim.log.levels.ERROR)
-                return
-              end
-              api.submit_prompt(function() end)
-            end)
-          end)
+          chat.send("/" .. name)
         end
       end)
     end)
   end)
 end
 
----Pick an agent from the server and switch to it
----Agents come from config.yaml and .zeroxzero/agents/*.md
+---Pick an agent from the server and set it for next prompt
 function M.agent_picker()
-  process.ensure(function(err)
+  server.ensure(function(err)
     if err then
       vim.notify("0x0: " .. err, vim.log.levels.ERROR)
       return
@@ -178,7 +193,7 @@ function M.agent_picker()
         format_item = function(item)
           local label = item.displayName or item.name or "unknown"
           if item.description and item.description ~= "" then
-            label = label .. " — " .. item.description
+            label = label .. " \u{2014} " .. item.description
           end
           return label
         end,
@@ -186,14 +201,9 @@ function M.agent_picker()
         if not choice then
           return
         end
-        -- Cycle to agent via TUI command — append @agent and submit
-        api.execute_command("agent_cycle", function(cmd_err)
-          if cmd_err then
-            vim.notify("0x0: " .. cmd_err, vim.log.levels.ERROR)
-          else
-            process.show()
-          end
-        end)
+        local chat = require("zeroxzero.chat")
+        chat.set_agent(choice.name)
+        vim.notify("0x0: agent set to " .. (choice.displayName or choice.name), vim.log.levels.INFO)
       end)
     end)
   end)

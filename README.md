@@ -2,7 +2,7 @@
 
 Neovim plugin for the [0x0](https://github.com/anonymous-dev-org/0x0) AI coding assistant.
 
-Spawns 0x0's TUI in a Neovim terminal and bridges editor context (files, selections, diagnostics) via HTTP. Reacts to SSE events for file reloads, permission dialogs, and notifications.
+Native Neovim chat experience — floating window with streaming responses, foldable tool output, `vim.ui.input` for prompts, and `vim.ui.select` for permissions. No terminal buffer. Full vim motions and folds.
 
 All commands, agents, and skills are defined in your `config.yaml` and `.zeroxzero/` directory — the plugin fetches them from the server at runtime.
 
@@ -10,7 +10,28 @@ All commands, agents, and skills are defined in your `config.yaml` and `.zeroxze
 
 - Neovim >= 0.10
 - `curl` in PATH
-- `0x0` CLI installed
+- [`0x0-server`](https://github.com/anonymous-dev-org/0x0) installed
+- `ANTHROPIC_API_KEY` environment variable set (or configured in `~/.config/0x0/config.yaml`)
+
+## Quick Start
+
+1. Install and set your API key:
+
+```bash
+npm i -g @anonymous-dev/0x0@latest
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+2. Add the plugin (lazy.nvim):
+
+```lua
+{
+  "anonymous-dev-org/0x0.nvim",
+  opts = {},
+}
+```
+
+3. Open Neovim and press `<leader>0` to open the chat window.
 
 ## Installation
 
@@ -38,18 +59,16 @@ use {
 
 ```lua
 require("zeroxzero").setup({
-  cmd = "0x0",                    -- Path to 0x0 binary
-  args = {},                      -- Extra CLI arguments
-  port = 0,                       -- 0 = random port
+  cmd = "0x0-server",             -- Server binary (falls back to "0x0 serve")
+  port = 4096,                    -- Server port
   hostname = "127.0.0.1",
-  terminal = {
-    position = "vsplit",          -- "vsplit" | "split" | "float" | "tab"
-    size = 80,
-    float_opts = {
-      width = 0.8,
-      height = 0.8,
-      border = "rounded",
-    },
+  auto_start = true,              -- Start server if not running
+  chat = {
+    width = 0.5,                  -- Fraction of editor width (0-1) or absolute columns
+    height = 0.8,                 -- Fraction of editor height (0-1) or absolute rows
+    border = "rounded",           -- Neovim border style
+    fold_tools = true,            -- Auto-fold completed tool output
+    show_thinking = false,        -- Show reasoning/thinking blocks
   },
   keymaps = {
     toggle = "<leader>0",
@@ -62,41 +81,95 @@ require("zeroxzero").setup({
     model_list = "<leader>0m",
     command_picker = "<leader>0c",
     agent_picker = "<leader>0g",
+    inline_edit = "<leader>0e",
   },
 })
 ```
 
 ## Keymaps
 
+### Global
+
 | Keymap | Mode | Action |
 |--------|------|--------|
-| `<leader>0` | n | Toggle terminal |
+| `<leader>0` | n | Toggle chat window |
 | `<leader>0a` | n,v | Ask (with selection context in visual) |
-| `<leader>0f` | n | Add current file to prompt |
-| `<leader>0s` | v | Add selection to prompt |
+| `<leader>0f` | n | Add current file to context |
+| `<leader>0s` | v | Add selection to context |
 | `<leader>0l` | n | List sessions |
 | `<leader>0n` | n | New session |
 | `<leader>0i` | n | Interrupt session |
-| `<leader>0m` | n | List models |
+| `<leader>0m` | n | Model picker |
 | `<leader>0c` | n,v | Command picker |
 | `<leader>0g` | n | Agent picker |
+| `<leader>0e` | n,v | Inline edit |
+
+### Chat Buffer
+
+| Key | Action |
+|-----|--------|
+| `q` | Close chat window |
+| `<CR>` | New prompt |
+| `<C-c>` | Interrupt current response |
+| `za` | Toggle fold (tool output) |
+| `zM` | Fold all |
+| `zR` | Unfold all |
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `:ZeroOpen` | Open 0x0 terminal |
-| `:ZeroToggle` | Toggle terminal visibility |
-| `:ZeroClose` | Hide terminal |
+| `:ZeroOpen` | Open chat window |
+| `:ZeroToggle` | Toggle chat window |
+| `:ZeroClose` | Close chat window |
 | `:ZeroAsk [prompt]` | Ask a question |
-| `:ZeroAddFile` | Add current file to prompt |
-| `:ZeroAddSelection` | Add visual selection to prompt |
+| `:ZeroAddFile` | Add current file to context |
+| `:ZeroAddSelection` | Add visual selection to context |
 | `:ZeroSessionList` | Pick a session |
 | `:ZeroSessionNew` | New session |
 | `:ZeroSessionInterrupt` | Interrupt current session |
-| `:ZeroModelList` | Open model picker |
+| `:ZeroModelList` | Model picker |
 | `:ZeroCommandPicker` | Pick from available commands |
 | `:ZeroAgentPicker` | Pick from available agents |
+| `:ZeroInlineEdit` | Inline edit at cursor/selection |
+
+## Chat Window
+
+The chat window is a native Neovim floating buffer with:
+
+- **Streaming responses** — text appears as the model generates it
+- **Foldable tool output** — tool invocations (file edits, bash, etc.) fold into single lines with status icons
+- **Permission dialogs** — `vim.ui.select` for allow/reject decisions
+- **Question dialogs** — multi-step `vim.ui.select`/`vim.ui.input` sequences
+- **Auto-scroll** — follows output unless you scroll up
+- **Session switching** — load history from any session
+
+### Chat Buffer Format
+
+```
+────────────────────────────────────────────────────
+ You
+────────────────────────────────────────────────────
+fix the bug in auth.ts
+
+────────────────────────────────────────────────────
+ Assistant (claude-sonnet-4-6)
+────────────────────────────────────────────────────
+
+I'll fix the authentication bug.
+
+✔ edit src/auth.ts [+5/-3]
+│ @@ -10,5 +10,7 @@
+│  function auth() {
+│ -  return false
+│ +  return true
+│  }
+
+✔ bash npm test
+│ PASS src/auth.test.ts
+
+The tests pass now.
+```
 
 ## Statusline
 
@@ -117,12 +190,10 @@ sections = {
 
 ## How It Works
 
-The plugin communicates with 0x0's HTTP server using the same TUI routes as the VS Code extension:
+1. **Connect**: Checks if `0x0-server` is running on port 4096. Starts it in the background if needed.
+2. **Stream**: Opens SSE connection to `GET /event` for real-time message streaming.
+3. **Prompt**: Sends messages via `POST /session/:id/prompt_async` (non-blocking).
+4. **Render**: `message.part.updated` SSE events stream text deltas and tool results into the chat buffer.
+5. **Interact**: Permission and question dialogs appear as native `vim.ui.select` overlays.
 
-1. **Spawn**: Opens `0x0 --port <random>` in a Neovim terminal
-2. **Poll**: Waits for the server to be ready via `GET /app`
-3. **Inject**: Sends file references and prompts via `POST /tui/append-prompt` + `POST /tui/submit-prompt`
-4. **React**: Listens to `GET /app/event` SSE stream for file changes, permissions, and notifications
-5. **Manage**: Sessions, models, commands, and agents are all fetched from the server (`GET /session`, `GET /command`, `GET /agent`)
-
-Commands and agents are defined in your project's `config.yaml`, `.zeroxzero/commands/*.md`, and `.zeroxzero/agents/*.md` — the plugin never hardcodes them.
+All requests include an `x-zeroxzero-directory` header so the server routes them to the correct project instance.

@@ -13,6 +13,9 @@ function M.request(method, path, opts, callback)
 
   local cmd = { "curl", "-s", "-w", "\n%{http_code}", "-X", method }
 
+  table.insert(cmd, "-H")
+  table.insert(cmd, "x-zeroxzero-directory: " .. vim.fn.getcwd())
+
   if cfg.auth then
     table.insert(cmd, "-u")
     table.insert(cmd, cfg.auth.username .. ":" .. cfg.auth.password)
@@ -72,6 +75,9 @@ function M.request_sync(method, path, opts)
   local url = string.format("http://%s:%d%s", cfg.hostname, cfg.port, path)
 
   local cmd = { "curl", "-s", "-w", "\n%{http_code}", "-X", method }
+
+  table.insert(cmd, "-H")
+  table.insert(cmd, "x-zeroxzero-directory: " .. vim.fn.getcwd())
 
   if cfg.auth then
     table.insert(cmd, "-u")
@@ -138,31 +144,122 @@ end
 -- Domain-specific wrappers
 
 function M.health(callback)
-  M.request("GET", "/app", { timeout = 2 }, callback)
-end
-
-function M.append_prompt(text, callback)
-  M.post("/tui/append-prompt", { text = text }, callback)
-end
-
-function M.submit_prompt(callback)
-  M.post("/tui/submit-prompt", nil, callback)
-end
-
-function M.clear_prompt(callback)
-  M.post("/tui/clear-prompt", nil, callback)
-end
-
-function M.execute_command(alias, callback)
-  M.post("/tui/execute-command", { command = alias }, callback)
+  M.request("GET", "/global/health", { timeout = 2 }, callback)
 end
 
 function M.get_sessions(callback)
   M.get("/session/", callback)
 end
 
-function M.select_session(session_id, callback)
-  M.post("/tui/select-session", { sessionID = session_id }, callback)
+function M.get_session(session_id, callback)
+  M.get("/session/" .. session_id, callback)
+end
+
+---Create a new session
+---@param opts? {title?: string}
+---@param callback fun(err?: string, session_id?: string)
+function M.create_session(opts, callback)
+  if type(opts) == "function" then
+    callback = opts
+    opts = nil
+  end
+  M.request("POST", "/session/", { body = opts }, function(err, response)
+    if err then
+      callback(err)
+      return
+    end
+    if not response or response.status ~= 200 or not response.body or not response.body.id then
+      callback("unexpected response from /session/: " .. vim.inspect(response))
+      return
+    end
+    callback(nil, response.body.id)
+  end)
+end
+
+---@param session_id string
+function M.delete_session(session_id)
+  M.request("DELETE", "/session/" .. session_id, nil, function() end)
+end
+
+---Send a prompt asynchronously (returns 204, results stream via SSE)
+---@param session_id string
+---@param parts table[] array of PromptInput parts ({type:"text", text:...}, etc.)
+---@param opts? {model?: {providerID: string, modelID: string}, agent?: string}
+---@param callback fun(err?: string)
+function M.prompt_async(session_id, parts, opts, callback)
+  if type(opts) == "function" then
+    callback = opts
+    opts = nil
+  end
+  local body = { parts = parts }
+  if opts then
+    if opts.model then body.model = opts.model end
+    if opts.agent then body.agent = opts.agent end
+  end
+  M.request("POST", "/session/" .. session_id .. "/prompt_async", { body = body }, function(err, response)
+    if err then
+      callback(err)
+      return
+    end
+    if response and response.status ~= 204 and response.status ~= 200 then
+      callback("unexpected status " .. tostring(response.status))
+      return
+    end
+    callback(nil)
+  end)
+end
+
+---Send a blocking message (waits for full response)
+---@param session_id string
+---@param text string
+---@param callback fun(err?: string)
+function M.send_message(session_id, text, callback)
+  M.request(
+    "POST",
+    "/session/" .. session_id .. "/message",
+    { body = { parts = { { type = "text", text = text } } }, timeout = 120 },
+    function(err, response)
+      if err then
+        callback(err)
+        return
+      end
+      if not response or (response.status ~= 200 and response.status ~= 204) then
+        callback("unexpected status " .. tostring(response and response.status))
+        return
+      end
+      callback(nil)
+    end
+  )
+end
+
+---Get messages for a session
+---@param session_id string
+---@param callback fun(err?: string, messages?: table[])
+function M.get_messages(session_id, callback)
+  M.get("/session/" .. session_id .. "/message?limit=100", function(err, response)
+    if err then
+      callback(err)
+      return
+    end
+    if not response or response.status ~= 200 then
+      callback("unexpected status " .. tostring(response and response.status))
+      return
+    end
+    callback(nil, response.body or {})
+  end)
+end
+
+---Abort a running session
+---@param session_id string
+---@param callback fun(err?: string)
+function M.abort_session(session_id, callback)
+  M.post("/session/" .. session_id .. "/abort", nil, function(err)
+    if err then
+      callback(err)
+      return
+    end
+    callback(nil)
+  end)
 end
 
 function M.reply_permission(request_id, reply, callback)
@@ -189,47 +286,8 @@ function M.get_skills(callback)
   M.get("/skill", callback)
 end
 
--- Inline edit session management
-
-function M.create_session(callback)
-  M.request("POST", "/session/", nil, function(err, response)
-    if err then
-      callback(err)
-      return
-    end
-    if not response or response.status ~= 200 or not response.body or not response.body.id then
-      callback("unexpected response from /session/: " .. vim.inspect(response))
-      return
-    end
-    callback(nil, response.body.id)
-  end)
-end
-
----@param session_id string
-function M.delete_session(session_id)
-  M.request("DELETE", "/session/" .. session_id, nil, function() end)
-end
-
----@param session_id string
----@param text string
----@param callback fun(err?: string)
-function M.send_message(session_id, text, callback)
-  M.request(
-    "POST",
-    "/session/" .. session_id .. "/message",
-    { body = { parts = { { type = "text", text = text } } }, timeout = 120 },
-    function(err, response)
-      if err then
-        callback(err)
-        return
-      end
-      if not response or (response.status ~= 200 and response.status ~= 204) then
-        callback("unexpected status " .. tostring(response and response.status))
-        return
-      end
-      callback(nil)
-    end
-  )
+function M.get_providers(callback)
+  M.get("/provider/", callback)
 end
 
 return M

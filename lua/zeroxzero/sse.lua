@@ -40,7 +40,6 @@ local function dispatch(event_type, properties)
     end
   end
 
-  -- Also dispatch to wildcard handlers
   local wildcard = M._handlers["*"]
   if wildcard then
     for _, handler in ipairs(wildcard) do
@@ -59,7 +58,6 @@ local function reset_heartbeat()
   M._heartbeat_timer = vim.uv.new_timer()
   M._heartbeat_timer:start(M._heartbeat_timeout, 0, function()
     vim.schedule(function()
-      -- Heartbeat timeout — reconnect
       M.disconnect()
       M.connect()
     end)
@@ -77,7 +75,6 @@ local function on_stdout(_, data)
   vim.schedule(function()
     _buffer = _buffer .. data
 
-    -- Process complete lines
     while true do
       local newline_pos = _buffer:find("\n")
       if not newline_pos then
@@ -87,7 +84,6 @@ local function on_stdout(_, data)
       local line = _buffer:sub(1, newline_pos - 1)
       _buffer = _buffer:sub(newline_pos + 1)
 
-      -- SSE format: "data: {...}"
       if line:sub(1, 6) == "data: " then
         local json_str = line:sub(7)
         local ok, event = pcall(vim.json.decode, json_str)
@@ -106,7 +102,8 @@ function M.connect()
   end
 
   local cfg = config.current
-  local url = string.format("http://%s:%d/app/event", cfg.hostname, cfg.port)
+  local cwd = vim.fn.getcwd()
+  local url = string.format("http://%s:%d/event?directory=%s", cfg.hostname, cfg.port, cwd)
 
   local cmd = { "curl", "-s", "-N" }
 
@@ -125,7 +122,6 @@ function M.connect()
     text = true,
     stdout = on_stdout,
   }, function()
-    -- Process exited
     vim.schedule(function()
       M._process = nil
       M._connected = false
@@ -137,8 +133,8 @@ function M.connect()
       end
 
       -- Auto-reconnect with exponential backoff
-      local process = require("zeroxzero.process")
-      if process.connected then
+      local server = require("zeroxzero.server")
+      if server.connected then
         M._reconnect_timer = vim.uv.new_timer()
         M._reconnect_timer:start(M._reconnect_delay, 0, function()
           vim.schedule(function()
@@ -150,7 +146,6 @@ function M.connect()
     end)
   end)
 
-  -- Register built-in handlers on first connect
   M._register_builtin_handlers()
   reset_heartbeat()
 end
@@ -185,7 +180,6 @@ function M._register_builtin_handlers()
   end
   _builtin_registered = true
 
-  -- Connection established
   M.on("server.connected", function()
     M._connected = true
     M._reconnect_delay = 1000
@@ -231,6 +225,30 @@ function M._register_builtin_handlers()
     local ok, notification = pcall(require, "zeroxzero.ui.notification")
     if ok then
       notification.handle(props)
+    end
+  end)
+
+  -- Message part updates → chat window
+  M.on("message.part.updated", function(props)
+    local ok, chat = pcall(require, "zeroxzero.chat")
+    if ok then
+      chat._on_part_updated(props)
+    end
+  end)
+
+  -- Message metadata updates
+  M.on("message.updated", function(props)
+    local ok, chat = pcall(require, "zeroxzero.chat")
+    if ok then
+      chat._on_message_updated(props)
+    end
+  end)
+
+  -- Session errors
+  M.on("session.error", function(props)
+    local ok, chat = pcall(require, "zeroxzero.chat")
+    if ok then
+      chat._on_session_error(props)
     end
   end)
 end

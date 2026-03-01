@@ -17,25 +17,27 @@ function M.check()
     vim.health.error("curl not found in PATH")
   end
 
-  -- Check 0x0 binary
+  -- Check server binary
   local config = require("zeroxzero.config")
   local cmd = config.current.cmd
   if vim.fn.executable(cmd) == 1 then
     vim.health.ok(cmd .. " found")
+  elseif vim.fn.executable("0x0") == 1 then
+    vim.health.ok("0x0 found (fallback)")
   else
     vim.health.error(cmd .. " not found in PATH", {
-      "Install 0x0: https://github.com/anthropics/0x0",
-      "Or set cmd in setup(): require('zeroxzero').setup({ cmd = '/path/to/0x0' })",
+      "Install 0x0-server: https://github.com/anthropics/0x0",
+      "Or set cmd in setup(): require('zeroxzero').setup({ cmd = '/path/to/0x0-server' })",
     })
   end
 
   -- Check server connectivity
-  local process = require("zeroxzero.process")
-  if process.connected then
+  local server = require("zeroxzero.server")
+  if server.connected then
     local port = config.current.port
     vim.health.ok("Connected to 0x0 server on port " .. port)
   else
-    vim.health.info("Not connected to 0x0 server (use :ZeroOpen to start)")
+    vim.health.info("Not connected to 0x0 server (use :ZeroOpen to connect)")
   end
 end
 

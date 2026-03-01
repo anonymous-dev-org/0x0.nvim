@@ -1,19 +1,20 @@
 local M = {}
 
 ---@class zeroxzero.Config
----@field cmd string
----@field args string[]
----@field port number 0 = random
+---@field cmd string server binary name or path
+---@field port number server port (0 = auto-detect running server)
 ---@field hostname string
----@field auto_start boolean
----@field terminal zeroxzero.TerminalConfig
+---@field auto_start boolean start server if not running
+---@field chat zeroxzero.ChatConfig
 ---@field keymaps zeroxzero.KeymapConfig
 ---@field auth? {username: string, password: string}
 
----@class zeroxzero.TerminalConfig
----@field position "vsplit"|"split"|"float"|"tab"
----@field size number
----@field float_opts? {width: number, height: number, border: string}
+---@class zeroxzero.ChatConfig
+---@field width number|float fraction of editor width (0-1) or absolute columns
+---@field height number|float fraction of editor height (0-1) or absolute rows
+---@field border string nvim border style
+---@field fold_tools boolean auto-fold tool output blocks
+---@field show_thinking boolean show reasoning/thinking blocks
 
 ---@class zeroxzero.KeymapConfig
 ---@field toggle string
@@ -30,19 +31,16 @@ local M = {}
 
 ---@type zeroxzero.Config
 M.defaults = {
-  cmd = "0x0",
-  args = {},
-  port = 0,
+  cmd = "0x0-server",
+  port = 4096,
   hostname = "127.0.0.1",
   auto_start = true,
-  terminal = {
-    position = "vsplit",
-    size = 80,
-    float_opts = {
-      width = 0.8,
-      height = 0.8,
-      border = "rounded",
-    },
+  chat = {
+    width = 0.5,
+    height = 0.8,
+    border = "rounded",
+    fold_tools = true,
+    show_thinking = false,
   },
   keymaps = {
     toggle = "<leader>0",

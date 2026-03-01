@@ -3,7 +3,7 @@ if exists('g:loaded_zeroxzero')
 endif
 let g:loaded_zeroxzero = 1
 
-" Terminal management
+" Chat window management
 command! ZeroOpen    lua require('zeroxzero').open()
 command! ZeroToggle  lua require('zeroxzero').toggle()
 command! ZeroClose   lua require('zeroxzero').close()

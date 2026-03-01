@@ -6,7 +6,7 @@ M._status = ""
 ---@type string?
 M._session_title = nil
 
-local _frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+local _frames = { "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}" }
 
 ---@type table<string, true>
 local _busy = {}
@@ -77,14 +77,21 @@ end
 ---Get statusline string
 ---@return string
 function M.get()
-  local process = require("zeroxzero.process")
-  if not process.connected then
+  local server = require("zeroxzero.server")
+  if not server.connected then
     return ""
   end
 
   local parts = { "0x0" }
 
-  if next(_busy) then
+  -- Show busy status, filtered to active session if available
+  local chat_ok, chat = pcall(require, "zeroxzero.chat")
+  local active_session = chat_ok and chat._session_id or nil
+
+  if active_session and _busy[active_session] then
+    local phase = _phase[active_session] or "thinking"
+    table.insert(parts, _frames[_frame] .. " " .. phase)
+  elseif next(_busy) then
     local session_id = next(_busy)
     local phase = _phase[session_id] or "thinking"
     table.insert(parts, _frames[_frame] .. " " .. phase)

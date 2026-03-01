@@ -31,13 +31,13 @@ end
 local function _run(ctx, instruction)
   local api = require("zeroxzero.api")
   local permission = require("zeroxzero.permission")
-  local process = require("zeroxzero.process")
+  local server = require("zeroxzero.server")
 
   for line = ctx.start_line - 1, ctx.end_line - 1 do
     vim.api.nvim_buf_add_highlight(ctx.bufnr, _ns, "ZeroInlineWorking", line, 0, -1)
   end
 
-  process.ensure(function(err)
+  server.ensure(function(err)
     if err then
       vim.api.nvim_buf_clear_namespace(ctx.bufnr, _ns, 0, -1)
       vim.notify("0x0: " .. err, vim.log.levels.ERROR)
