@@ -5,41 +5,45 @@ CONTENTS                                              *zeroxzero-contents*
 
   1. Introduction ........................... |zeroxzero-intro|
   2. Setup .................................. |zeroxzero-setup|
-  3. Commands ............................... |zeroxzero-commands|
-  4. Keymaps ................................ |zeroxzero-keymaps|
-  5. Configuration .......................... |zeroxzero-config|
-  6. Statusline ............................. |zeroxzero-statusline|
-  7. Health Check ........................... |zeroxzero-health|
+  3. Configuration .......................... |zeroxzero-config|
+  4. Commands ............................... |zeroxzero-commands|
+  5. Keymaps ................................ |zeroxzero-keymaps|
+  6. Chat Window ............................ |zeroxzero-chat|
+  7. Statusline ............................. |zeroxzero-statusline|
+  8. Health Check ........................... |zeroxzero-health|
 
 ==============================================================================
 1. INTRODUCTION                                       *zeroxzero-intro*
 
 0x0.nvim is a Neovim plugin that integrates with the 0x0 AI coding
-assistant. It spawns 0x0's TUI in a Neovim terminal, injects editor
-context via HTTP, and reacts to SSE events for file reloads, permissions,
-and notifications.
+assistant. It provides a native Neovim chat experience — a floating
+window with streaming responses, foldable tool output, `vim.ui.input`
+for prompts, and `vim.ui.select` for permissions. No terminal buffer.
+Full vim motions and folds.
 
-The plugin acts as a bridge — it does not duplicate the chat UI. Instead
-it enhances the TUI with editor context (file references, selections,
-diagnostics).
-
-All commands, agents, and skills are defined in your config.yaml and
-.zeroxzero/ directory. The plugin fetches them from the server at
-runtime — no built-in prompts or agent definitions.
+The plugin connects to the 0x0-server daemon via HTTP and SSE for
+real-time message streaming, permission dialogs, question dialogs,
+file reload events, and toast notifications.
 
 ==============================================================================
 2. SETUP                                              *zeroxzero-setup*
 
+Requirements:
+- Neovim >= 0.10
+- `curl` in PATH
+- `0x0-server` installed (https://github.com/anonymous-dev-org/0x0)
+- `ANTHROPIC_API_KEY` env var set (or configured in config.yaml)
+
 Using lazy.nvim: >lua
   {
-    "0x0/0x0.nvim",
+    "anonymous-dev-org/0x0.nvim",
     opts = {},
   }
 <
 
 Using packer.nvim: >lua
   use {
-    "0x0/0x0.nvim",
+    "anonymous-dev-org/0x0.nvim",
     config = function()
       require("zeroxzero").setup()
     end,
@@ -53,88 +57,131 @@ Manual setup: >lua
 <
 
 ==============================================================================
-3. COMMANDS                                           *zeroxzero-commands*
-
-Terminal management:
-  :ZeroOpen                    Open 0x0 terminal (start if needed)
-  :ZeroToggle                  Toggle 0x0 terminal visibility
-  :ZeroClose                   Hide 0x0 terminal
-
-Context injection:
-  :ZeroAddFile                 Add current file reference to prompt
-  :ZeroAddSelection            Add visual selection to prompt
-
-Asking:
-  :ZeroAsk [prompt]            Open input or submit prompt directly
-
-Session management:
-  :ZeroSessionList             List and pick a session
-  :ZeroSessionNew              Create a new session
-  :ZeroSessionInterrupt        Interrupt current session
-
-Model:
-  :ZeroModelList               Open model picker in TUI
-
-Commands & Agents (from config.yaml):
-  :ZeroCommandPicker           Pick from available commands
-  :ZeroAgentPicker             Pick from available agents
-
-==============================================================================
-4. KEYMAPS                                            *zeroxzero-keymaps*
-
-Default keymaps (configurable via setup):
-
-  <leader>0      Normal      Toggle terminal
-  <leader>0a     Normal      Ask prompt
-  <leader>0a     Visual      Ask with selection context
-  <leader>0f     Normal      Add current file to prompt
-  <leader>0s     Visual      Add selection to prompt
-  <leader>0l     Normal      List sessions
-  <leader>0n     Normal      New session
-  <leader>0i     Normal      Interrupt session
-  <leader>0m     Normal      List models
-  <leader>0c     Normal/Vis  Command picker
-  <leader>0g     Normal      Agent picker
-
-To disable all keymaps, set each to empty string in setup.
-
-==============================================================================
-5. CONFIGURATION                                      *zeroxzero-config*
+3. CONFIGURATION                                      *zeroxzero-config*
 
 Default configuration: >lua
   require("zeroxzero").setup({
-    cmd = "0x0",                    -- Path to 0x0 binary
-    args = {},                      -- Extra CLI arguments
-    port = 0,                       -- 0 = random port
+    cmd = "0x0-server",             -- Server binary (falls back to "0x0 serve")
+    port = 4096,                    -- Server port
     hostname = "127.0.0.1",         -- Server hostname
-    auto_start = true,              -- Auto-start on first command
-    terminal = {
-      position = "vsplit",          -- "vsplit"|"split"|"float"|"tab"
-      size = 80,                    -- Width (vsplit) or height (split)
-      float_opts = {
-        width = 0.8,                -- Float width (0-1 = ratio)
-        height = 0.8,               -- Float height (0-1 = ratio)
-        border = "rounded",         -- Float border style
-      },
+    auto_start = true,              -- Start server if not running
+    chat = {
+      width = 0.5,                  -- Fraction of editor width (0-1)
+                                    -- or absolute columns (>1)
+      height = 0.8,                 -- Fraction of editor height (0-1)
+                                    -- or absolute rows (>1)
+      border = "rounded",           -- Neovim border style
+      fold_tools = true,            -- Auto-fold completed tool output
+      show_thinking = false,        -- Show reasoning/thinking blocks
     },
     keymaps = {
-      toggle = "<leader>0",
-      ask = "<leader>0a",
-      add_file = "<leader>0f",
-      add_selection = "<leader>0s",
-      session_list = "<leader>0l",
-      session_new = "<leader>0n",
-      session_interrupt = "<leader>0i",
-      model_list = "<leader>0m",
-      command_picker = "<leader>0c",
-      agent_picker = "<leader>0g",
+      toggle = "<leader>0",         -- Toggle chat window
+      context = "<leader>0f",       -- Add file (n) or selection (v)
+      session = "<leader>0s",       -- Session picker
+      interrupt = "<leader>0i",     -- Interrupt current response
+      model = "<leader>0m",         -- Model picker
+      inline_edit = "<leader>0e",   -- Inline edit
     },
     auth = nil,                     -- { username = "...", password = "..." }
   })
 <
 
+To disable a keymap, set it to empty string in setup.
+
 ==============================================================================
-6. STATUSLINE                                         *zeroxzero-statusline*
+4. COMMANDS                                           *zeroxzero-commands*
+
+  :ZeroToggle                                         *:ZeroToggle*
+    Toggle chat window visibility (starts server if needed).
+
+  :ZeroContext                                        *:ZeroContext*
+    Add context to the next prompt. In normal mode, adds the
+    current file. In visual mode, adds the selection.
+
+  :ZeroSession                                        *:ZeroSession*
+    Open session picker. Lists existing sessions and a
+    "New session" option. Creates a new session directly
+    if no sessions exist.
+
+  :ZeroInterrupt                                      *:ZeroInterrupt*
+    Interrupt the current response.
+
+  :ZeroModel                                          *:ZeroModel*
+    Open model picker (lists all providers and models).
+
+  :ZeroInlineEdit                                     *:ZeroInlineEdit*
+    Inline edit at cursor position or visual selection.
+    Creates a temporary session, sends the edit instruction,
+    and auto-reloads the file when done.
+
+==============================================================================
+5. KEYMAPS                                            *zeroxzero-keymaps*
+
+Global keymaps (configurable via setup):
+
+  <leader>0      Normal      Toggle chat window
+  <leader>0f     Normal      Add current file to context
+  <leader>0f     Visual      Add selection to context
+  <leader>0s     Normal      Session picker
+  <leader>0i     Normal      Interrupt current response
+  <leader>0m     Normal      Model picker
+  <leader>0e     Normal/Vis  Inline edit
+
+Chat buffer keymaps (hardcoded):
+
+  q              Close chat window
+  <CR>           New prompt
+  <C-c>          Interrupt current response
+  <Tab>          Cycle to next agent (per-prompt)
+  <S-Tab>        Cycle to previous agent (per-prompt)
+  za             Toggle fold (tool output)
+  zM             Fold all
+  zR             Unfold all
+
+==============================================================================
+6. CHAT WINDOW                                        *zeroxzero-chat*
+
+The chat window is a native Neovim floating buffer with:
+
+- Streaming responses — text appears as the model generates it
+- Foldable tool output — tool invocations fold into single lines
+  with status icons (✔ success, ✘ error, ▶ running)
+- Permission dialogs — vim.ui.select for allow/reject decisions
+- Question dialogs — multi-step vim.ui.select/vim.ui.input
+- Auto-scroll — follows output unless you scroll up
+- Session switching — load history from any session
+
+Chat buffer format: >
+
+  ────────────────────────────────────────────────────
+   You
+  ────────────────────────────────────────────────────
+  fix the bug in auth.ts
+
+  ────────────────────────────────────────────────────
+   Assistant (claude-sonnet-4-6)
+  ────────────────────────────────────────────────────
+
+  I'll fix the authentication bug.
+
+  ✔ edit src/auth.ts [+5/-3]
+  │ @@ -10,5 +10,7 @@
+  │  function auth() {
+  │ -  return false
+  │ +  return true
+  │  }
+
+  ✔ bash npm test
+  │ PASS src/auth.test.ts
+
+  The tests pass now.
+<
+
+Tool output lines prefixed with │ are foldable. When fold_tools
+is enabled (default), completed tool blocks auto-fold.
+
+==============================================================================
+7. STATUSLINE                                         *zeroxzero-statusline*
 
 Add 0x0 status to your statusline: >lua
   -- lualine example
@@ -145,16 +192,16 @@ Add 0x0 status to your statusline: >lua
   }
 <
 
-Returns a string like "0x0 | connected | Session Title" when connected,
-or empty string when not connected.
+Returns a string with connection status, animated spinner when busy,
+and current session title. Returns empty string when not connected.
 
 ==============================================================================
-7. HEALTH CHECK                                       *zeroxzero-health*
+8. HEALTH CHECK                                       *zeroxzero-health*
 
 Run `:checkhealth zeroxzero` to verify your setup:
   - Neovim >= 0.10
   - curl available
-  - 0x0 binary found
+  - 0x0-server binary found
   - Server connectivity
 
 ==============================================================================

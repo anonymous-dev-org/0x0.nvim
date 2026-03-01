@@ -21,6 +21,10 @@ M._user_scrolled = false
 M._model = nil
 ---@type string? override agent for next prompt
 M._agent = nil
+---@type table[]? cached agent list from server
+M._agents = nil
+---@type integer agent cycle index (0 = default, 1..N = specific agent)
+M._agent_idx = 0
 ---@type string[]? context files to include in next prompt
 M._context_files = nil
 
@@ -44,6 +48,8 @@ local function ensure_buf()
   vim.keymap.set("n", "q", function() M.close() end, { buffer = buf, desc = "Close chat" })
   vim.keymap.set("n", "<CR>", function() M.prompt() end, { buffer = buf, desc = "New prompt" })
   vim.keymap.set("n", "<C-c>", function() M.interrupt() end, { buffer = buf, desc = "Interrupt" })
+  vim.keymap.set("n", "<Tab>", function() M._cycle_agent(1) end, { buffer = buf, desc = "Next agent" })
+  vim.keymap.set("n", "<S-Tab>", function() M._cycle_agent(-1) end, { buffer = buf, desc = "Previous agent" })
 
   -- Track scroll position for auto-scroll
   vim.api.nvim_create_autocmd("CursorMoved", {
@@ -102,7 +108,62 @@ function M._session_title()
   if M._session_id then
     title = title .. "| " .. M._session_id:sub(1, 12) .. " "
   end
+  if M._agent then
+    title = title .. "| " .. M._agent .. " "
+  end
   return title
+end
+
+---Update the window title to reflect current state
+local function refresh_title()
+  if M._win and vim.api.nvim_win_is_valid(M._win) then
+    vim.api.nvim_win_set_config(M._win, { title = M._session_title(), title_pos = "center" })
+  end
+end
+
+---Cycle through agents
+---@param direction integer 1 for next, -1 for previous
+function M._cycle_agent(direction)
+  local function do_cycle()
+    if not M._agents or #M._agents == 0 then
+      vim.notify("0x0: no agents available", vim.log.levels.WARN)
+      return
+    end
+
+    local count = #M._agents
+    M._agent_idx = (M._agent_idx + direction) % (count + 1)
+
+    if M._agent_idx == 0 then
+      M._agent = nil
+      vim.notify("0x0: agent: default", vim.log.levels.INFO)
+    else
+      local agent = M._agents[M._agent_idx]
+      M._agent = agent.name
+      vim.notify("0x0: agent: " .. (agent.displayName or agent.name), vim.log.levels.INFO)
+    end
+
+    refresh_title()
+  end
+
+  if M._agents then
+    do_cycle()
+    return
+  end
+
+  api.get_agents(function(err, response)
+    if err then
+      vim.notify("0x0: " .. err, vim.log.levels.ERROR)
+      return
+    end
+    local agents = response and response.body or {}
+    M._agents = {}
+    for _, agent in ipairs(agents) do
+      if not agent.hidden then
+        table.insert(M._agents, agent)
+      end
+    end
+    do_cycle()
+  end)
 end
 
 ---Auto-scroll to bottom if the user hasn't scrolled up
@@ -230,6 +291,8 @@ function M._send_impl(text)
   if M._agent then
     prompt_opts.agent = M._agent
     M._agent = nil
+    M._agent_idx = 0
+    refresh_title()
   end
 
   api.prompt_async(M._session_id, parts, prompt_opts, function(send_err)

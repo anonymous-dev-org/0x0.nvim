@@ -18,15 +18,10 @@ local M = {}
 
 ---@class zeroxzero.KeymapConfig
 ---@field toggle string
----@field ask string
----@field add_file string
----@field add_selection string
----@field session_list string
----@field session_new string
----@field session_interrupt string
----@field model_list string
----@field command_picker string
----@field agent_picker string
+---@field context string
+---@field session string
+---@field interrupt string
+---@field model string
 ---@field inline_edit string
 
 ---@type zeroxzero.Config
@@ -44,15 +39,10 @@ M.defaults = {
   },
   keymaps = {
     toggle = "<leader>0",
-    ask = "<leader>0a",
-    add_file = "<leader>0f",
-    add_selection = "<leader>0s",
-    session_list = "<leader>0l",
-    session_new = "<leader>0n",
-    session_interrupt = "<leader>0i",
-    model_list = "<leader>0m",
-    command_picker = "<leader>0c",
-    agent_picker = "<leader>0g",
+    context = "<leader>0f",
+    session = "<leader>0s",
+    interrupt = "<leader>0i",
+    model = "<leader>0m",
     inline_edit = "<leader>0e",
   },
   auth = nil,
