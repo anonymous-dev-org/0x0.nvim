@@ -10,11 +10,7 @@ local M = {}
 
 ---@class zeroxzero.KeymapConfig
 ---@field send string
----@field send_message string
----@field diff string
----@field interrupt string
----@field inline_edit string
----@field inline_abort string
+---@field switch_session string
 
 ---@type zeroxzero.Config
 M.defaults = {
@@ -24,11 +20,7 @@ M.defaults = {
   auto_start = true,
   keymaps = {
     send = "",
-    send_message = "",
-    diff = "",
-    interrupt = "",
-    inline_edit = "",
-    inline_abort = "",
+    switch_session = "",
   },
   auth = nil,
 }

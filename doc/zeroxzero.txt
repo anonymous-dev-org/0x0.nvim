@@ -14,14 +14,12 @@ CONTENTS                                              *zeroxzero-contents*
 ==============================================================================
 1. INTRODUCTION                                       *zeroxzero-intro*
 
-0x0.nvim is a Neovim companion for the 0x0 AI coding assistant. The TUI
-is the brain. Neovim is the hands. This plugin bridges the two — send
-file context to the TUI, review diffs natively in vimdiff, and make
-inline code edits without leaving your editor.
+0x0.nvim is a Neovim companion for the 0x0 AI coding assistant. This
+plugin lets you send file and selection context from Neovim to a TUI
+session's prompt stash, and pick which session to target.
 
 The plugin connects to the 0x0-server daemon via HTTP and SSE for
-permission dialogs, question dialogs, file reload events, toast
-notifications, and statusline updates.
+file auto-reload events and statusline updates.
 
 ==============================================================================
 2. SETUP                                              *zeroxzero-setup*
@@ -65,10 +63,7 @@ Default configuration: >lua
     auto_start = true,              -- Start server if not running
     keymaps = {
       send = "<leader>0s",          -- Send file (n) or selection (v) to TUI
-      send_message = "<leader>0S",  -- Send context + message to TUI
-      diff = "<leader>0d",          -- Review diffs in vimdiff
-      interrupt = "<leader>0i",     -- Interrupt current response
-      inline_edit = "<leader>0e",   -- Inline edit
+      switch_session = "<leader>0p",-- Switch pinned session
     },
     auth = nil,                     -- { username = "...", password = "..." }
   })
@@ -80,25 +75,8 @@ To disable a keymap, set it to empty string in setup.
 4. COMMANDS                                           *zeroxzero-commands*
 
   :ZeroSend                                           *:ZeroSend*
-    Send current file reference to the TUI prompt.
+    Send current file reference to the TUI prompt stash.
     In visual mode, sends the selection with line references.
-
-  :ZeroSendMessage                                    *:ZeroSendMessage*
-    Send file/selection context plus a typed message to the TUI
-    prompt. Opens vim.ui.input for the message.
-
-  :ZeroDiff                                           *:ZeroDiff*
-    Review file diffs from the latest completed session in native
-    vimdiff splits. If multiple files were changed, opens a picker.
-    If multiple sessions exist, opens a session picker first.
-
-  :ZeroInterrupt                                      *:ZeroInterrupt*
-    Interrupt the current response.
-
-  :ZeroInlineEdit                                     *:ZeroInlineEdit*
-    Inline edit at cursor position or visual selection.
-    Creates a temporary session, sends the edit instruction,
-    and auto-reloads the file when done.
 
 ==============================================================================
 5. KEYMAPS                                            *zeroxzero-keymaps*
@@ -107,10 +85,7 @@ Global keymaps (configurable via setup):
 
   <leader>0s     Normal      Send file reference to TUI
   <leader>0s     Visual      Send selection to TUI
-  <leader>0S     Normal/Vis  Send context + message to TUI
-  <leader>0d     Normal      Review diffs in vimdiff
-  <leader>0i     Normal      Interrupt current response
-  <leader>0e     Normal/Vis  Inline edit
+  <leader>0p     Normal      Switch pinned session
 
 ==============================================================================
 6. STATUSLINE                                         *zeroxzero-statusline*
@@ -124,8 +99,8 @@ Add 0x0 status to your statusline: >lua
   }
 <
 
-Returns a string with connection status, animated spinner when busy,
-and current session title. Returns empty string when not connected.
+Returns a string with connection status and current session title.
+Returns empty string when not connected.
 
 ==============================================================================
 7. HEALTH CHECK                                       *zeroxzero-health*

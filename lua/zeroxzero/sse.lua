@@ -215,22 +215,6 @@ function M._register_builtin_handlers()
     M._reconnect_delay = 1000
   end)
 
-  -- Permission requests
-  M.on("permission.asked", function(props)
-    local ok, permission = pcall(require, "zeroxzero.permission")
-    if ok then
-      permission.handle(props)
-    end
-  end)
-
-  -- Question requests
-  M.on("question.asked", function(props)
-    local ok, question = pcall(require, "zeroxzero.question")
-    if ok then
-      question.handle(props)
-    end
-  end)
-
   -- File edits — auto-reload buffers
   M.on("file.edited", function(props)
     if props.file then
@@ -247,14 +231,6 @@ function M._register_builtin_handlers()
       if bufnr ~= -1 then
         vim.cmd("checktime " .. bufnr)
       end
-    end
-  end)
-
-  -- Toast notifications
-  M.on("tui.toast.show", function(props)
-    local ok, notification = pcall(require, "zeroxzero.ui.notification")
-    if ok then
-      notification.handle(props)
     end
   end)
 

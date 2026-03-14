@@ -93,7 +93,12 @@ function M.get()
     table.insert(parts, M._status)
   end
 
-  if M._session_title then
+  -- Show pinned session title from nvim plugin, fallback to SSE session title
+  local ok, tui = pcall(require, "zeroxzero.tui")
+  local pinned = ok and tui.pinned() or nil
+  if pinned then
+    table.insert(parts, "📌 " .. pinned.title)
+  elseif M._session_title then
     table.insert(parts, M._session_title)
   end
 
