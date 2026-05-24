@@ -1,13 +1,22 @@
 --- 0x0-completion: Inline ghost text code completions.
---- Spawns an ACP provider directly over stdio.
+--- Dispatches to an ACP provider over stdio, or to the cursor-agent CLI
+--- (provider.kind == "cursor") for one-shot headless completions.
 
 local config = require("zxz.core.config")
 local context = require("zxz.complete.context")
 local client = require("zxz.core.acp_client")
+local cursor_client = require("zxz.core.cursor_client")
 local ghost = require("zxz.complete.ghost")
 local debounce = require("zxz.complete.debounce")
 local cache = require("zxz.complete.cache")
 local log = require("zxz.core.log")
+
+local function stream_for(provider)
+  if provider and provider.kind == "cursor" then
+    return cursor_client.stream_completion
+  end
+  return client.stream_completion
+end
 
 local function format_err(err)
   if err == nil then
@@ -217,7 +226,7 @@ function M._request_completion()
   _streaming_text = ""
   _visible_text = ""
 
-  _abort_fn = client.stream_completion(provider, {
+  _abort_fn = stream_for(provider)(provider, {
     prefix = ctx.prefix,
     suffix = ctx.suffix,
     language = ctx.language,

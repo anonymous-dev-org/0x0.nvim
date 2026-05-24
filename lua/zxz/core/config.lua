@@ -257,6 +257,12 @@ M.defaults = {
       args = { "--acp" },
       models = { "gemini-2.5-pro", "gemini-2.5-flash" },
     },
+    ["cursor"] = {
+      name = "Cursor CLI",
+      kind = "cursor",
+      command = "cursor-agent",
+      models = { "gpt-5", "gpt-5-codex", "claude-sonnet-4-6", "claude-opus-4-7" },
+    },
   },
 }
 
