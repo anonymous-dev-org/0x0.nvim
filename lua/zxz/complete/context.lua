@@ -15,36 +15,42 @@ function M.gather()
   local row = cursor[1] -- 1-indexed
   local col = cursor[2] -- 0-indexed
 
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local total = #lines
+  local total = vim.api.nvim_buf_line_count(bufnr)
 
-  -- Current line split at cursor position
-  local current_line = lines[row] or ""
+  local current_line = vim.api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1] or ""
   local before_cursor = current_line:sub(1, col)
   local after_cursor = current_line:sub(col + 1)
 
-  -- Build prefix: lines before current + current line up to cursor
-  local prefix_start = math.max(1, row - MAX_PREFIX_LINES)
+  local prefix_start = math.max(0, row - 1 - MAX_PREFIX_LINES)
+  local prefix_lines = vim.api.nvim_buf_get_lines(bufnr, prefix_start, row - 1, false)
   local prefix_parts = {}
-  for i = prefix_start, row - 1 do
-    table.insert(prefix_parts, lines[i])
+  for i = 1, #prefix_lines do
+    prefix_parts[i] = prefix_lines[i]
   end
-  table.insert(prefix_parts, before_cursor)
+  prefix_parts[#prefix_parts + 1] = before_cursor
   local prefix = table.concat(prefix_parts, "\n")
 
-  -- Build suffix: rest of current line + lines after cursor
   local suffix_end = math.min(total, row + MAX_SUFFIX_LINES)
   local suffix_parts = { after_cursor }
-  for i = row + 1, suffix_end do
-    table.insert(suffix_parts, lines[i])
+  if row < suffix_end then
+    local tail = vim.api.nvim_buf_get_lines(bufnr, row, suffix_end, false)
+    for i = 1, #tail do
+      suffix_parts[#suffix_parts + 1] = tail[i]
+    end
   end
   local suffix = table.concat(suffix_parts, "\n")
+
+  local filetype = vim.bo[bufnr].filetype
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+  if filepath == "" then
+    filepath = "untitled." .. (filetype ~= "" and filetype or "txt")
+  end
 
   return {
     prefix = prefix,
     suffix = suffix,
-    language = vim.bo[bufnr].filetype,
-    filepath = vim.api.nvim_buf_get_name(bufnr),
+    language = filetype,
+    filepath = filepath,
   }
 end
 

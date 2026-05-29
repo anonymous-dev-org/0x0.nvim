@@ -65,21 +65,17 @@ end
 ---@field env? table<string, string>
 ---@field models? string[]
 ---@field auth_method? string
+---@field kind? string
 ---@field ignore_stderr_patterns? string[]  Lua patterns; matching stderr lines are silenced
 
 ---@class zxz.Config
 ---@field provider string
----@field width number
----@field input_height integer
----@field title_model string|table<string, string>|nil
----@field sound string|false  one of: false / "off" / "bell" / "notification" / absolute path
 ---@field request_timeout_ms integer  per-request ACP timeout (cancelled with timeout error after)
 ---@field idle_kill_ms integer  kill provider subprocess if no stdout/stderr for this long during a request
 ---@field initialize_retries integer  retry count for the ACP initialize handshake
+---@field complete table
 ---@field providers table<string, zxz.ProviderConfig>
 
--- Default stderr noise patterns by provider. Users can extend or override
--- these via config.providers.<name>.ignore_stderr_patterns.
 local DEFAULT_STDERR_PATTERNS = {
   ["claude-acp"] = {
     "Session not found",
@@ -98,9 +94,9 @@ local DEFAULT_STDERR_PATTERNS = {
   },
 }
 
----@type zxz.Config
-M.defaults = {
-  provider = "claude-acp",
+--- Chat/agent-era defaults kept for downstream forks. The completion plugin
+--- does not read these keys.
+M.legacy_defaults = {
   width = 0.4,
   input_height = 3,
   title_model = {
@@ -110,9 +106,6 @@ M.defaults = {
     ["gemini-acp"] = "gemini-2.5-flash",
   },
   sound = vim.fn.has("mac") == 1 and "notification" or "bell",
-  request_timeout_ms = 60000,
-  idle_kill_ms = 120000,
-  initialize_retries = 3,
   checkpoint_keep_n = 20,
   reconcile = "strict",
   profile = "write",
@@ -164,11 +157,7 @@ M.defaults = {
   },
   tool_policy = {
     auto_approve = { "read" },
-    -- Path globs (lua patterns) for which write/shell get auto-approved.
-    -- Matched against rawInput.file_path / path / filePath when present.
     auto_approve_paths = {},
-    -- Path globs that always force the gating prompt, even for classes in
-    -- auto_approve. Wins over auto_approve_paths.
     deny_paths = {},
   },
   repo_map = {
@@ -194,12 +183,20 @@ M.defaults = {
     max_age_seconds = 24 * 60 * 60,
   },
   detached_runs_max = 4,
-  test_command = nil, -- auto-detected per project; override per-setup if needed
-  test_command_timeout_ms = 5000, -- @test-output kill-on-timeout (T2.1, T2.7)
+  test_command = nil,
+  test_command_timeout_ms = 5000,
   context = {
-    summarize_threshold = 8 * 1024, -- bare @path of files larger than this emits a summary
+    summarize_threshold = 8 * 1024,
   },
   tool_output_max_lines = 200,
+}
+
+---@type zxz.Config
+M.defaults = {
+  provider = "claude-acp",
+  request_timeout_ms = 60000,
+  idle_kill_ms = 120000,
+  initialize_retries = 3,
   complete = {
     enabled = true,
     provider = "codex-acp",
@@ -207,10 +204,15 @@ M.defaults = {
     debounce_ms = 150,
     max_tokens = 128,
     temperature = 0,
+    prompt_timeout_ms = 15000,
+    trigger_on_cursor_moved = false,
+    allow_read_tools = false,
     suppress_in_strings_and_comments = true,
     keymaps = {
+      enabled = true,
       accept = "<Tab>",
       dismiss = "<C-]>",
+      accept_fallback = true,
     },
     filetypes = {
       exclude = {
@@ -271,11 +273,6 @@ M.current = vim.deepcopy(M.defaults)
 ---@param opts? table
 function M.setup(opts)
   M.current = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), opts or {})
-  M.current.profile = M.current.profile or M.current.default_profile
-  local profile = M.current.profiles and M.current.profiles[M.current.profile]
-  if profile and profile.tool_policy and not (opts and opts.tool_policy) then
-    M.current.tool_policy = vim.tbl_deep_extend("force", vim.deepcopy(M.current.tool_policy or {}), profile.tool_policy)
-  end
 end
 
 ---@param name? string

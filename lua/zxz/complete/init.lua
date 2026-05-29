@@ -34,6 +34,36 @@ local function format_err(err)
   return tostring(err)
 end
 
+local function project_cwd()
+  if vim.fn.has("nvim-0.10") == 1 then
+    return vim.fn.getcwd(-1, 0)
+  end
+  return vim.fn.getcwd()
+end
+
+local function line_before_cursor(line, col)
+  if col <= 0 then
+    return ""
+  end
+  if vim.str_byteindex then
+    local ok, byte_end = pcall(vim.str_byteindex, line, col, false)
+    if ok and byte_end then
+      return line:sub(1, byte_end)
+    end
+  end
+  return line:sub(1, col)
+end
+
+local function line_after_cursor(line, col)
+  if vim.str_byteindex then
+    local ok, byte_start = pcall(vim.str_byteindex, line, col, false)
+    if ok and byte_start then
+      return line:sub(byte_start + 1)
+    end
+  end
+  return line:sub(col + 1)
+end
+
 local M = {}
 
 ---@type fun()? Current request abort function
@@ -62,6 +92,7 @@ end
 
 local function visible_completion(text, before)
   text = (text or ""):gsub("^%s*```[%w_-]*\n?", ""):gsub("\n?```%s*$", "")
+  text = text:gsub("^[\r\n]+", "")
   text = text:gsub("[%z\1-\8\11\12\14-\31\127]", "")
   if before and before ~= "" and text:sub(1, #before) == before then
     text = text:sub(#before + 1)
@@ -92,10 +123,15 @@ function M.setup(opts)
   -- Set up autocommands
   local group = vim.api.nvim_create_augroup("zxz_complete", { clear = true })
 
-  vim.api.nvim_create_autocmd({ "TextChangedI", "CursorMovedI" }, {
+  local trigger_events = { "TextChangedI" }
+  if cfg.trigger_on_cursor_moved then
+    trigger_events[#trigger_events + 1] = "CursorMovedI"
+  end
+
+  vim.api.nvim_create_autocmd(trigger_events, {
     group = group,
     callback = function()
-      if not cfg.enabled then
+      if not config.current.complete.enabled then
         return
       end
       M._on_text_changed()
@@ -106,6 +142,16 @@ function M.setup(opts)
     group = group,
     callback = function()
       M.dismiss()
+    end,
+  })
+
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = group,
+    callback = function()
+      M._cancel()
+      if client.stop_all_completion_clients then
+        client.stop_all_completion_clients()
+      end
     end,
   })
 
@@ -143,8 +189,8 @@ function M._on_text_changed()
   local row = cursor[1]
   local col = cursor[2]
   local line = vim.api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1] or ""
-  local before = line:sub(1, col)
-  local after = line:sub(col + 1)
+  local before = line_before_cursor(line, col)
+  local after = line_after_cursor(line, col)
 
   -- Don't trigger on empty lines or very short prefixes
   if before:match("^%s*$") then
@@ -173,8 +219,17 @@ function M._on_text_changed()
     end
   end
 
-  -- Any keystroke implicitly dismisses the current ghost; a fresh request
-  -- is debounced below.
+  if cfg.cache.enabled then
+    local ctx = context.gather()
+    local cached, key = cache.get_or_shift(ctx.prefix, ctx.suffix, ctx.language)
+    if cached then
+      M._cancel_request_only()
+      ghost.show(bufnr, row - 1, col, cached)
+      _last_cache_key = key
+      return
+    end
+  end
+
   M._cancel()
 
   -- Debounce the completion request
@@ -198,13 +253,13 @@ function M._request_completion()
   local row = cursor[1] - 1 -- 0-based
   local col = cursor[2] -- 0-based
   local line = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1] or ""
-  local before = line:sub(1, col)
-  local after = line:sub(col + 1)
+  local before = line_before_cursor(line, col)
+  local after = line_after_cursor(line, col)
   if after ~= "" then
     M.dismiss()
     return
   end
-  local cwd = vim.fn.getcwd()
+  local cwd = project_cwd()
   local provider = resolve_provider()
   if not provider then
     return
@@ -212,8 +267,7 @@ function M._request_completion()
 
   -- Check cache
   if cfg.cache.enabled then
-    local key = cache.make_key(ctx.prefix, ctx.suffix, ctx.language)
-    local cached = cache.get(key)
+    local cached, key = cache.get_or_shift(ctx.prefix, ctx.suffix, ctx.language)
     if cached then
       ghost.show(bufnr, row, col, cached)
       _last_cache_key = key
@@ -453,7 +507,14 @@ end
 --- Set up insert-mode keymaps.
 function M._setup_keymaps()
   local cfg = config.current.complete
-  local km = cfg.keymaps
+  local km = cfg.keymaps or {}
+
+  pcall(vim.keymap.del, "i", km.accept or "", { buffer = false })
+  pcall(vim.keymap.del, "i", km.dismiss or "", { buffer = false })
+
+  if km.enabled == false then
+    return
+  end
 
   local function fall_through(key)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(key, true, false, true), "n", false)
@@ -462,9 +523,11 @@ function M._setup_keymaps()
   if km.accept and km.accept ~= "" then
     vim.keymap.set("i", km.accept, function()
       if not M.accept() then
-        fall_through(km.accept)
+        if km.accept_fallback ~= false then
+          fall_through(km.accept)
+        end
       end
-    end, { silent = true, desc = "0x0: Accept completion" })
+    end, { silent = true, desc = "0x0: Accept completion", noremap = true })
   end
 
   if km.dismiss and km.dismiss ~= "" then
@@ -473,8 +536,10 @@ function M._setup_keymaps()
         M.dismiss()
         return
       end
-      fall_through(km.dismiss)
-    end, { silent = true, desc = "0x0: Dismiss completion" })
+      if km.accept_fallback ~= false then
+        fall_through(km.dismiss)
+      end
+    end, { silent = true, desc = "0x0: Dismiss completion", noremap = true })
   end
 end
 

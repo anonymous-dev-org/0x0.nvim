@@ -15,6 +15,16 @@ local ns = vim.api.nvim_create_namespace("zxz_complete")
 ---@type zxz.complete.GhostState?
 local _state = nil
 
+local function cursor_at_line_end(line, col)
+  if vim.str_byteindex then
+    local ok, byte_idx = pcall(vim.str_byteindex, line, col, false)
+    if ok and byte_idx then
+      return byte_idx >= #line
+    end
+  end
+  return col >= #line
+end
+
 --- Set up highlight groups.
 local function setup_highlights()
   vim.api.nvim_set_hl(0, "ZxzCompleteGhost", { link = "Comment", default = true })
@@ -42,7 +52,7 @@ function M.show(bufnr, row, col, text)
     return
   end
   local line = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1] or ""
-  if col < #line then
+  if not cursor_at_line_end(line, col) then
     M.clear()
     return
   end

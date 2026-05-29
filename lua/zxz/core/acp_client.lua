@@ -43,7 +43,7 @@ function M.new(provider, opts)
         local stderr_blob = table.concat(stderr_lines, "\n")
         log.error(("acp[%s]: exited with code %d\n%s"):format(provider.name or provider.command, code, stderr_blob))
         vim.notify(
-          ("acp[%s]: exited with code %d (see :ZxzChatLog for details)"):format(provider.name or provider.command, code),
+          ("acp[%s]: exited with code %d (see :ZxzLog for details)"):format(provider.name or provider.command, code),
           vim.log.levels.ERROR
         )
       end
@@ -104,14 +104,22 @@ end
 ---@param method string
 ---@param params table|nil
 ---@param callback fun(result: table|nil, err: table|nil)
+---@param opts? { timeout_ms?: integer }
 ---@return integer id
-function Client:request(method, params, callback)
+function Client:request(method, params, callback, opts)
+  opts = opts or {}
   local id = self:_next_id()
   local entry = { cb = callback, method = method }
   self.callbacks[id] = entry
 
-  local timeout = config.current.request_timeout_ms or 0
-  if timeout > 0 and not NON_TIMED_METHODS[method] then
+  local timeout = opts.timeout_ms
+  if timeout == nil then
+    timeout = config.current.request_timeout_ms or 0
+    if NON_TIMED_METHODS[method] then
+      timeout = 0
+    end
+  end
+  if timeout > 0 then
     local timer = vim.uv.new_timer()
     entry.timer = timer
     timer:start(
@@ -406,8 +414,9 @@ end
 ---@param session_id string
 ---@param prompt_blocks table[]
 ---@param callback fun(result: table|nil, err: table|nil)
-function Client:prompt(session_id, prompt_blocks, callback)
-  return self:request("session/prompt", { sessionId = session_id, prompt = prompt_blocks }, callback)
+---@param opts? { timeout_ms?: integer }
+function Client:prompt(session_id, prompt_blocks, callback, opts)
+  return self:request("session/prompt", { sessionId = session_id, prompt = prompt_blocks }, callback, opts)
 end
 
 ---@param session_id string
@@ -416,6 +425,14 @@ function Client:cancel(session_id)
     return
   end
   self:notify("session/cancel", { sessionId = session_id })
+end
+
+---@param session_id string
+function Client:close_session(session_id)
+  if not session_id then
+    return
+  end
+  self:notify("session/close", { sessionId = session_id })
 end
 
 ---@param session_id string
@@ -462,6 +479,23 @@ end
 -- ---------------------------------------------------------------------------
 
 local _completion_clients = {}
+local _client_factory = nil
+
+---@param fn fun(provider: table, opts?: table): table|nil
+function M._set_client_factory(fn)
+  _client_factory = fn
+end
+
+function M._reset_client_factory()
+  _client_factory = nil
+end
+
+local function _create_client(provider, opts)
+  if _client_factory then
+    return _client_factory(provider, opts)
+  end
+  return M.new(provider, opts)
+end
 
 local function _completion_key(provider)
   return tostring(provider.command) .. "\0" .. table.concat(provider.args or {}, "\1")
@@ -491,7 +525,7 @@ local function _get_completion_client(provider, on_ready)
     return entry.client
   end
 
-  local client = M.new(provider, { host_fs = false })
+  local client = _create_client(provider, { host_fs = false })
   entry = {
     client = client,
     ready_waiters = { on_ready },
@@ -586,7 +620,10 @@ function M.stream_completion(provider, request, on_chunk, on_done)
   local done = false
   local session_id = nil
   local client_ref = nil
+  local session_closed = false
   local pending_requests = {}
+  local complete_cfg = config.current.complete or {}
+  local prompt_timeout_ms = complete_cfg.prompt_timeout_ms
 
   local function track_request(id)
     if id then
@@ -608,16 +645,25 @@ function M.stream_completion(provider, request, on_chunk, on_done)
     pending_requests = {}
   end
 
+  local function close_session()
+    if session_closed or not session_id or not client_ref then
+      return
+    end
+    session_closed = true
+    client_ref:close_session(session_id)
+  end
+
   local function finish(err)
     if done then
       return
     end
     done = true
     active = false
+    forget_pending_requests()
     if session_id and client_ref then
       client_ref:unsubscribe(session_id)
+      close_session()
     end
-    pending_requests = {}
     vim.schedule(function()
       on_done(err)
     end)
@@ -662,18 +708,26 @@ function M.stream_completion(provider, request, on_chunk, on_done)
           end
         end,
         on_request_permission = function(params, respond)
-          respond(_choose_completion_permission(params) or "")
+          local allow = nil
+          if config.current.complete and config.current.complete.allow_read_tools then
+            allow = _choose_completion_permission(params)
+          end
+          respond(allow or "")
         end,
       })
 
       local function send_prompt()
         local prompt_request_id
+        local prompt_opts = nil
+        if prompt_timeout_ms ~= nil then
+          prompt_opts = { timeout_ms = prompt_timeout_ms }
+        end
         prompt_request_id = track_request(client:prompt(session_id, {
           { type = "text", text = _completion_prompt(request) },
         }, function(_, prompt_err)
           untrack_request(prompt_request_id)
           finish(prompt_err)
-        end))
+        end, prompt_opts))
       end
 
       if request.model and request.model ~= "" then
@@ -701,8 +755,21 @@ function M.stream_completion(provider, request, on_chunk, on_done)
     if session_id and client_ref then
       client_ref:cancel(session_id)
       client_ref:unsubscribe(session_id)
+      close_session()
     end
     forget_pending_requests()
+  end
+end
+
+---Stop all singleton completion provider subprocesses.
+function M.stop_all_completion_clients()
+  for key, entry in pairs(_completion_clients) do
+    if entry.client then
+      pcall(function()
+        entry.client:stop()
+      end)
+    end
+    _completion_clients[key] = nil
   end
 end
 

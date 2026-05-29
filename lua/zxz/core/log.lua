@@ -18,8 +18,16 @@ local function log_path()
   return path
 end
 
+local function fs_stat(path)
+  local uv = vim.uv or vim.loop
+  if uv and uv.fs_stat then
+    return uv.fs_stat(path)
+  end
+  return nil
+end
+
 local function rotate(path)
-  local stat = vim.loop.fs_stat(path)
+  local stat = fs_stat(path)
   if stat and stat.size > MAX_BYTES then
     pcall(os.rename, path, path .. ".1")
   end

@@ -117,6 +117,54 @@ function M.set(key, completion)
   end
 end
 
+local function split_key(key)
+  local first = key:find("\0", 1, true)
+  if not first then
+    return nil
+  end
+  local second = key:find("\0", first + 1, true)
+  if not second then
+    return nil
+  end
+  return key:sub(1, first - 1), key:sub(first + 1, second - 1), key:sub(second + 1)
+end
+
+--- Get a cached completion, or shift a prior entry when the user typed one
+--- matching character.
+---@param prefix string
+---@param suffix string
+---@param language string
+---@return string? completion
+---@return string? matched_key
+function M.get_or_shift(prefix, suffix, language)
+  local key = M.make_key(prefix, suffix, language)
+  local hit = M.get(key)
+  if hit then
+    return hit, key
+  end
+
+  local new_p = prefix:sub(-200)
+  local new_s = suffix:sub(1, 200)
+
+  for _, entry in ipairs(_entries) do
+    local old_p, old_s, old_lang = split_key(entry.key)
+    if old_p and old_s == new_s and old_lang == language then
+      if #new_p == #old_p + 1 and new_p:sub(1, #old_p) == old_p then
+        local typed = new_p:sub(#old_p + 1, #old_p + 1)
+        if entry.completion:sub(1, 1) == typed then
+          local shifted = entry.completion:sub(2)
+          if shifted ~= "" then
+            M.set(key, shifted)
+            return shifted, key
+          end
+        end
+      end
+    end
+  end
+
+  return nil, nil
+end
+
 --- Clear all cached entries.
 function M.clear()
   _entries = {}

@@ -1,6 +1,6 @@
 .PHONY: test test-file lint lint-fix clean
 
-NVIM ?= nvim
+NVIM ?= $(shell command -v nvim)
 TEST_INIT := tests/minimal_init.lua
 
 test:

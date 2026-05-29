@@ -17,6 +17,10 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("ZxzCompleteSettings", function()
     require("zxz.complete").settings()
   end, { desc = "zxz: inline completion settings" })
+
+  vim.api.nvim_create_user_command("ZxzLog", function()
+    require("zxz.core.log").open()
+  end, { desc = "zxz: open debug log" })
 end
 
 return M

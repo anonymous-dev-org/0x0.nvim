@@ -8,78 +8,77 @@ line tying it to an observable failure mode.
 
 ## 1. What this plugin is
 
-0x0.nvim is a **workflow plugin** around agentic.nvim and git:
+0x0.nvim is an **inline ghost-text completion plugin** for Neovim:
 
-- **agentic.nvim** owns the chat UI, ACP session manager, permissions, provider
-  switching, and restore behavior.
-- **git** owns worktrees, stacked agent commits, and final merge commits.
+- **ACP providers** (`codex-acp`, `claude-acp`, `claude-agent-acp`, `gemini-acp`)
+  communicate over stdio via `lua/zxz/core/acp_client.lua` and
+  `lua/zxz/core/acp_transport.lua`.
+- **Cursor CLI** (`cursor-agent`) is an optional one-shot backend when
+  `provider.kind == "cursor"`.
+- **`lua/zxz/complete/`** owns debouncing, context gathering, ghost rendering,
+  caching, and insert-mode keymaps.
 
-0x0.nvim only owns the workflow around those tools:
+User-facing commands:
 
-- **`:ZxzChat [provider]`** creates a fresh git worktree, opens a new tabpage,
-  sets the tab-local cwd to that worktree, and calls `require("agentic").open()`.
-- Every completed Agentic turn commits dirty files as one normal commit on the
-  agent branch.
-- Agentic `new_session()` calls from a 0x0-managed chat tab are redirected into
-  a fresh `:ZxzChat` worktree.
-- **`:ZxzReview`** lets the user pick an agent worktree, refuses dirty
-  worktrees, opens a full-tab review view, accepts selected hunks/files into a
-  temporary review worktree, and only merges accepted changes into main when
-  the user presses `m`.
-- **`:ZxzCleanup [merged]`** removes agent worktrees.
+- **`:ZxzCompleteSettings`** — toggle provider, model, temperature, etc.
+- **`:ZxzLog`** — open the persistent debug log.
 
-Forbidden: re-adding a 0x0-owned chat panel, ACP session manager, permission
-ledger, inline edit UI, terminal-agent launcher, or context-share helper. Fix
-rich chat behavior in agentic.nvim; keep 0x0 review focused on the accept /
-feedback / merge workflow.
+Forbidden: re-adding a chat panel, worktree review UI, permission ledger,
+terminal-agent launcher, or ACP session manager for multi-turn chat. Keep 0x0
+focused on inline completion only.
 
 ---
 
-## 2. Worktree lifecycle
+## 2. ACP completion lifecycle
 
-`lua/zxz/worktree.lua`. **One worktree per chat session**, never reused.
+`lua/zxz/core/acp_client.lua` (`M.stream_completion`).
 
-- **Layout:** `<repo>/.git/zxz/wt-<id>/` on branch `zxz/agent-<id>`.
-- **`base_ref` is pinned at creation** to a concrete SHA. **Why:** the user's
-  main branch can advance while the agent works.
-- **`repo` is canonicalised** through `vim.fn.resolve`. **Why:** macOS symlink
-  mismatches (`/var` vs `/private/var`) previously broke comparisons.
-- **No auto-cleanup.** Worktrees survive nvim restart and are removed only by
-  `:ZxzCleanup`. **Why:** agent branches are often the only durable record of a
-  session.
-- **Agentic turns stack commits.** `:ZxzChat` installs an Agentic
-  `on_response_complete` hook. If the worktree is dirty at the end of a turn,
-  `Worktree.snapshot()` creates one normal commit for that turn. Later turns
-  create later commits on the same branch. **Why:** review should look like
-  normal git history.
-- **New Agentic sessions do not reuse a managed tab's worktree.** From inside a
-  0x0-managed chat tab, Agentic `new_session()` is redirected to `:ZxzChat`.
-  **Why:** Agentic sessions bind to cwd at creation time; reusing the tab would
-  silently put two sessions in one branch.
+- **One subprocess client singleton per provider command** (`_completion_clients`).
+  **Why:** spawning a new provider on every keystroke is too slow.
+- **One short-lived ACP session per completion request** (`session/new` →
+  `session/prompt` → teardown). **Why:** ACP sessions accumulate prompt history;
+  reusing a session would pollute later completions.
+- **Every session must be closed on finish or abort** (`session/cancel` then
+  `session/close`). **Why:** the provider session map grows without explicit
+  close; orphaned sessions leak memory.
+- **Do not enable host fs for completion sessions** (`host_fs = false`).
+  Context is inlined in the prompt. **Why:** tool loops add latency and fail when
+  fs handlers are absent.
+- **Tool permission requests during completion are cancelled by default.**
+  **Why:** inline completion must not trigger agent tool use.
 
 ---
 
-## 3. Review
+## 3. Ghost text and triggers
 
-`lua/zxz/review.lua` owns the minimal human review UI.
+`lua/zxz/complete/init.lua`, `lua/zxz/complete/ghost.lua`.
 
-`:ZxzReview` selects a `zxz/agent-*` worktree via `vim.ui.select` and refuses
-dirty worktrees. It creates/reuses a temporary `zxz/review-*` worktree at the
-agent branch's `base_ref`. Review never sets `MERGE_HEAD` in the main worktree.
-
-Review controls:
-
-- `A` accepts all remaining proposed changes into the review branch.
-- `a` on the file list accepts the selected file.
-- `a` in the diff pane accepts only the hunk under the cursor.
-- `f` sends feedback plus the selected diff context back to the same agent
-  worktree; the agent can add another normal commit to the agent branch.
-- `m` merges accepted review-branch commits into main with `git merge --no-ff`.
-- `q` closes review only. There is no main-worktree merge state to abort.
+- Ghost text renders only at **end-of-line** in **normal file buffers**
+  (`buftype == ""`).
+- Buffers may opt out via `vim.b[bufnr].zxz_complete_disable = true`.
+- Treesitter gating suppresses completion inside comments and string literals
+  when `suppress_in_strings_and_comments` is true (default).
+- Cache supports exact match and **prefix-shift** reuse when the user types a
+  character matching the start of a cached completion.
+- Default trigger is `TextChangedI` only; `CursorMovedI` is opt-in via config.
 
 ---
 
-## 4. Tests
+## 4. Configuration
+
+`lua/zxz/core/config.lua`.
+
+- **`complete.*`** — completion-specific settings (provider, debounce, cache,
+  keymaps, timeouts).
+- **`complete.provider`** selects the ACP backend; falls back to top-level
+  `provider` when unset.
+- **`complete.acp`** — optional override table with a custom `command`.
+- Legacy chat-era defaults live in `M.legacy_defaults` for forks that still
+  merge them via `setup()`; the completion plugin does not read them.
+
+---
+
+## 5. Tests
 
 - Tests are plenary-busted specs under `tests/*_spec.lua`.
 - `make test` runs the lot.
@@ -90,15 +89,19 @@ Currently pinned regression tests:
 
 | Rule | Pinned test |
 |---|---|
-| Worktree path canonicalisation | `worktree_spec.lua::"resolves repo_root from inside an agent worktree"` |
-| Three-dot diff is base-vs-branch | `worktree_spec.lua::"diff reports changes made on the agent branch"` |
-| Agentic turn commits stack | `zxz_chat_spec.lua::"commits each completed agentic turn onto the agent branch"` |
-| Agentic new session gets a new worktree | `zxz_chat_spec.lua::"redirects agentic new_session from a managed tab into a fresh worktree"` |
-| Review does not start a main-worktree merge | `zxz_review_spec.lua::"opens a full review tab without starting a merge in main"` |
-| Review accept-all then merge | `zxz_review_spec.lua::"accepts all proposed changes into the review branch, then merges them into main"` |
-| Review accepts one file | `zxz_review_spec.lua::"accepts one file without accepting the rest of the proposal"` |
-| Review accepts one hunk | `zxz_review_spec.lua::"accepts only the hunk under the cursor from the diff pane"` |
-| Review feedback targets same agent worktree | `zxz_review_spec.lua::"sends feedback to the same agent worktree"` |
-| Review refuses dirty worktrees | `zxz_review_spec.lua::"refuses review while the agent worktree has uncommitted changes"` |
-| Review picker over multiple worktrees | `zxz_chat_spec.lua::"pick() invokes vim.ui.select when multiple worktrees exist"` |
-| Chat opens Agentic with worktree cwd | `zxz_chat_spec.lua::"creates a worktree and opens agentic with the worktree as cwd"` |
+| Ghost text sanitization | `complete_spec.lua::"sanitizes ghost text before rendering and accepting"` |
+| Multiline ghost render/accept | `complete_spec.lua::"renders and accepts multiline ghost text"` |
+| No ghost mid-line | `complete_spec.lua::"does not render ghost text in the middle of a line"` |
+| Nofile buffer gate | `complete_spec.lua::"does not request completions for nofile buffers"` |
+| Provider resolution + prefix strip | `complete_spec.lua::"uses the resolved provider and drops repeated prefix text"` |
+| Mid-line request gate | `complete_spec.lua::"does not request completions in the middle of a line"` |
+| Multiline streaming | `complete_spec.lua::"keeps multiline streamed completions displayable"` |
+| Stream error notify | `complete_spec.lua::"notifies the user when a streamed completion fails"` |
+| Module load smoke | `smoke_spec.lua::"loads all surviving zxz modules from runtimepath"` |
+| Cache exact hit | `cache_spec.lua::"returns exact cache hits"` |
+| Cache prefix-shift | `cache_spec.lua::"shifts a cached completion when the typed character matches"` |
+| Bounded context reads | `context_spec.lua::"reads bounded prefix lines on large buffers"` |
+| Unsaved buffer filepath | `context_spec.lua::"uses an untitled filepath for unnamed buffers"` |
+| ACP session close on finish | `acp_completion_spec.lua::"finish closes the session after a successful prompt"` |
+| Cursor stream-json deltas | `cursor_client_spec.lua::"streams running-total assistant text as deltas"` |
+| Debug log levels | `log_spec.lua::"appends timestamped lines at each level"` |
