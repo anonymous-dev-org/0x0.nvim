@@ -1,75 +1,16 @@
 local M = {}
 
-local function join(...)
-  if vim.fs and vim.fs.joinpath then
-    return vim.fs.joinpath(...)
-  end
-  return table.concat({ ... }, "/")
-end
-
-local function normalize(path)
-  return vim.fn.fnamemodify(path, ":p")
-end
-
-local function executable(command)
-  return type(command) == "string" and command ~= "" and vim.fn.executable(command) == 1
-end
-
-local function plugin_root()
-  local source = debug.getinfo(1, "S").source
-  if source:sub(1, 1) == "@" then
-    source = source:sub(2)
-  end
-  return vim.fn.fnamemodify(source, ":p:h:h:h:h")
-end
-
-function M.resolve_claude_acp_command(opts)
-  opts = opts or {}
-  local root = opts.plugin_root or plugin_root()
-  local is_executable = opts.executable or executable
-
-  local data_bin = join(vim.fn.stdpath("data"), "0x0", "claude-agent-server", "bin", "run")
-  if is_executable(data_bin) then
-    return data_bin
-  end
-
-  local plugin_bin = normalize(join(root, "claude-agent-server", "bin", "run"))
-  if is_executable(plugin_bin) then
-    return plugin_bin
-  end
-
-  local monorepo_bin = normalize(join(root, "..", "claude-agent-server", "bin", "run"))
-  if is_executable(monorepo_bin) then
-    return monorepo_bin
-  end
-
-  if is_executable("claude-agent-server") then
-    return "claude-agent-server"
-  end
-
-  if is_executable("claude-agent-acp") then
-    return "claude-agent-acp"
-  end
-
-  if is_executable("claude-code-acp") then
-    return "claude-code-acp"
-  end
-
-  return "claude-agent-server"
-end
-
 ---@class zxz.ProviderConfig
 ---@field name string
 ---@field command string
 ---@field args? string[]
 ---@field env? table<string, string>
 ---@field models? string[]
+---@field model? string
 ---@field auth_method? string
----@field kind? string
 ---@field ignore_stderr_patterns? string[]  Lua patterns; matching stderr lines are silenced
 
 ---@class zxz.Config
----@field provider string
 ---@field request_timeout_ms integer  per-request ACP timeout (cancelled with timeout error after)
 ---@field idle_kill_ms integer  kill provider subprocess if no stdout/stderr for this long during a request
 ---@field initialize_retries integer  retry count for the ACP initialize handshake
@@ -86,121 +27,45 @@ local DEFAULT_STDERR_PATTERNS = {
     "No onPostToolUseHook found",
     "%[PreToolUseHook%]",
   },
-  ["claude-agent-acp"] = {
-    "Session not found",
-    "session/prompt",
-    "Spawning Claude Code",
-    "Experiments loaded",
-  },
 }
 
---- Chat/agent-era defaults kept for downstream forks. The completion plugin
---- does not read these keys.
-M.legacy_defaults = {
-  width = 0.4,
-  input_height = 3,
-  title_model = {
-    ["claude-acp"] = "claude-haiku-4-5",
-    ["claude-agent-acp"] = "claude-haiku-4-5",
-    ["codex-acp"] = "o3",
-    ["gemini-acp"] = "gemini-2.5-flash",
-  },
-  sound = vim.fn.has("mac") == 1 and "notification" or "bell",
-  checkpoint_keep_n = 20,
-  reconcile = "strict",
-  profile = "write",
-  default_profile = "write",
-  profiles = {
-    ask = {
-      name = "Ask",
-      description = "Read-only codebase inspection.",
-      tool_policy = {
-        auto_approve = { "read" },
-        deny = { "write", "shell" },
-        auto_approve_paths = {},
-        deny_paths = {},
-      },
-    },
-    write = {
-      name = "Write",
-      description = "Edit files with approval gates for risky actions.",
-      tool_policy = {
-        auto_approve = { "read" },
-        auto_approve_paths = {},
-        deny_paths = {},
-      },
-    },
-    review = {
-      name = "Review",
-      description = "Inspect diffs, diagnostics, tests, and risks.",
-      tool_policy = {
-        auto_approve = { "read" },
-        deny = { "write", "shell" },
-        auto_approve_paths = {},
-        deny_paths = {},
-      },
-    },
-    autonomous = {
-      name = "Autonomous",
-      description = "Long-running codebase work with explicit review.",
-      tool_policy = {
-        auto_approve = { "read" },
-        auto_approve_paths = {},
-        deny_paths = {},
-      },
-    },
-  },
-  favorite_models = {},
-  thinking = {
-    enabled = nil,
-    effort = nil,
-  },
-  tool_policy = {
-    auto_approve = { "read" },
-    auto_approve_paths = {},
-    deny_paths = {},
-  },
-  repo_map = {
-    budget_bytes = 50 * 1024,
-  },
-  rules = {
-    paths = { ".0x0/rules.md", ".zed/rules.md", "AGENTS.md" },
-  },
-  auto_prelude = {
-    cursor = false,
-    repo_map = false,
-    recent = false,
-  },
-  code_actions = {},
-  inline_diff = {
-    streaming_refresh = true,
-    streaming_refresh_delay_ms = 40,
-  },
-  edit_events = {
-    max_content_bytes = 512 * 1024,
-    max_diff_bytes = 256 * 1024,
-    max_retained_runs = 64,
-    max_age_seconds = 24 * 60 * 60,
-  },
-  detached_runs_max = 4,
-  test_command = nil,
-  test_command_timeout_ms = 5000,
-  context = {
-    summarize_threshold = 8 * 1024,
-  },
-  tool_output_max_lines = 200,
+local THINKING_MODEL_MARKERS = { "thinking", "reasoning" }
+local THINKING_MODEL_DENYLIST = {
+  o3 = true,
+}
+
+local DEFAULT_COMPLETION_MODELS = {
+  "gpt-5-codex",
+  "gpt-5",
+  "claude-haiku-4-5",
+  "claude-sonnet-4-6",
+  "claude-opus-4-7",
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
+  "sonnet-4",
+}
+
+local DEFAULT_COMPLETION_MODEL_PROVIDERS = {
+  ["gpt-5-codex"] = "codex-acp",
+  ["gpt-5"] = "codex-acp",
+  ["claude-haiku-4-5"] = "claude-acp",
+  ["claude-sonnet-4-6"] = "claude-acp",
+  ["claude-opus-4-7"] = "claude-acp",
+  ["gemini-2.5-flash"] = "gemini-acp",
+  ["gemini-2.5-pro"] = "gemini-acp",
+  ["sonnet-4"] = "cursor-acp",
 }
 
 ---@type zxz.Config
 M.defaults = {
-  provider = "claude-acp",
   request_timeout_ms = 60000,
   idle_kill_ms = 120000,
   initialize_retries = 3,
   complete = {
     enabled = true,
-    provider = "codex-acp",
-    model = nil,
+    model = "gpt-5-codex",
+    models = vim.deepcopy(DEFAULT_COMPLETION_MODELS),
+    model_providers = vim.deepcopy(DEFAULT_COMPLETION_MODEL_PROVIDERS),
     debounce_ms = 150,
     max_tokens = 128,
     temperature = 0,
@@ -236,39 +101,39 @@ M.defaults = {
   providers = {
     ["claude-acp"] = {
       name = "Claude ACP",
-      command = M.resolve_claude_acp_command(),
+      command = "claude-acp",
+      model = "claude-haiku-4-5",
       models = { "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5" },
       ignore_stderr_patterns = DEFAULT_STDERR_PATTERNS["claude-acp"],
-    },
-    ["claude-agent-acp"] = {
-      name = "Claude Agent ACP",
-      command = "claude-agent-acp",
-      models = { "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5" },
-      ignore_stderr_patterns = DEFAULT_STDERR_PATTERNS["claude-agent-acp"],
     },
     ["codex-acp"] = {
       name = "Codex ACP",
       command = "codex-acp",
       args = { "-c", "notify=[]" },
       auth_method = "chatgpt",
-      models = { "gpt-5-codex", "gpt-5", "o3" },
+      model = "gpt-5-codex",
+      models = { "gpt-5-codex", "gpt-5" },
     },
     ["gemini-acp"] = {
       name = "Gemini ACP",
       command = "gemini",
       args = { "--acp" },
+      model = "gemini-2.5-flash",
       models = { "gemini-2.5-pro", "gemini-2.5-flash" },
     },
-    ["cursor"] = {
-      name = "Cursor CLI",
-      kind = "cursor",
+    ["cursor-acp"] = {
+      name = "Cursor ACP",
       command = "cursor-agent",
-      models = { "gpt-5", "gpt-5-codex", "claude-sonnet-4-6", "claude-opus-4-7" },
+      args = { "acp" },
+      model = "sonnet-4",
+      models = { "sonnet-4" },
     },
   },
 }
 
 M.current = vim.deepcopy(M.defaults)
+
+local first_non_thinking_model
 
 ---@param opts? table
 function M.setup(opts)
@@ -278,7 +143,9 @@ end
 ---@param name? string
 ---@return zxz.ProviderConfig|nil, string|nil
 function M.resolve_provider(name)
-  name = name or M.current.provider
+  if not name or name == "" then
+    return nil, "provider name required"
+  end
   local provider = M.current.providers[name]
   if not provider then
     return nil, "unknown provider: " .. tostring(name)
@@ -286,27 +153,140 @@ function M.resolve_provider(name)
   return provider, nil
 end
 
+---@param models string[]
+---@param model string
+---@return boolean
+local function model_in_list(models, model)
+  for _, candidate in ipairs(models or {}) do
+    if candidate == model then
+      return true
+    end
+  end
+  return false
+end
+
+---@param model string
+---@return zxz.ProviderConfig|nil, string|nil
+local function resolve_provider_for_model(model)
+  local complete = M.current.complete or {}
+  local provider_name = type(complete.model_providers) == "table" and complete.model_providers[model] or nil
+  if provider_name and provider_name ~= "" then
+    return M.resolve_provider(provider_name)
+  end
+
+  local provider_names = {}
+  for name in pairs(M.current.providers or {}) do
+    provider_names[#provider_names + 1] = name
+  end
+  table.sort(provider_names)
+
+  for _, name in ipairs(provider_names) do
+    local provider = M.current.providers[name]
+    if provider and (provider.model == model or model_in_list(provider.models, model)) then
+      return provider, nil
+    end
+  end
+
+  return nil, "unknown completion model: " .. tostring(model)
+end
+
 ---@return zxz.ProviderConfig|nil, string|nil
 function M.resolve_completion_provider()
   local complete = M.current.complete or {}
-  local override = complete.acp
-  if type(override) == "table" and override.command and override.command ~= "" then
-    local provider = vim.deepcopy(override)
-    provider.name = provider.name or provider.provider or "completion"
-    return provider, nil
+
+  local model = M.resolve_completion_model(nil, complete.model)
+  if not model then
+    return nil, "no non-thinking completion model configured"
   end
 
-  local provider_name = complete.provider
-  if (not provider_name or provider_name == "") and type(override) == "table" then
-    provider_name = override.provider
-  end
-  provider_name = provider_name or M.current.provider
-
-  local provider, err = M.resolve_provider(provider_name)
+  local provider, err = resolve_provider_for_model(model)
   if not provider then
     return nil, err
   end
   return vim.deepcopy(provider), nil
+end
+
+---@param model string|nil
+---@return boolean
+function M.is_thinking_model(model)
+  if type(model) ~= "string" or model == "" then
+    return false
+  end
+  local lower = model:lower()
+  if THINKING_MODEL_DENYLIST[lower] then
+    return true
+  end
+  for _, marker in ipairs(THINKING_MODEL_MARKERS) do
+    if lower:find(marker, 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
+function first_non_thinking_model(models)
+  for _, model in ipairs(models or {}) do
+    if type(model) == "string" and model ~= "" and not M.is_thinking_model(model) then
+      return model
+    end
+  end
+end
+
+---@return string[]
+function M.completion_model_choices()
+  local complete = M.current.complete or {}
+  local choices = {}
+  local seen = {}
+
+  local function add(model)
+    if type(model) ~= "string" or model == "" or seen[model] or M.is_thinking_model(model) then
+      return
+    end
+    choices[#choices + 1] = model
+    seen[model] = true
+  end
+
+  for _, model in ipairs(complete.models or {}) do
+    add(model)
+  end
+
+  if #choices == 0 then
+    local provider_names = {}
+    for name in pairs(M.current.providers or {}) do
+      provider_names[#provider_names + 1] = name
+    end
+    table.sort(provider_names)
+    for _, name in ipairs(provider_names) do
+      local provider = M.current.providers[name] or {}
+      add(provider.model)
+      for _, model in ipairs(provider.models or {}) do
+        add(model)
+      end
+    end
+  end
+
+  return choices
+end
+
+---@param provider zxz.ProviderConfig|nil
+---@param requested_model string|nil
+---@return string|nil
+function M.resolve_completion_model(provider, requested_model)
+  provider = provider or {}
+  if type(requested_model) == "string" and requested_model ~= "" and not M.is_thinking_model(requested_model) then
+    return requested_model
+  end
+
+  if type(provider.model) == "string" and provider.model ~= "" and not M.is_thinking_model(provider.model) then
+    return provider.model
+  end
+
+  local configured_model = first_non_thinking_model(M.completion_model_choices())
+  if configured_model and (not provider.command or model_in_list(provider.models, configured_model)) then
+    return configured_model
+  end
+
+  return first_non_thinking_model(provider.models)
 end
 
 return M

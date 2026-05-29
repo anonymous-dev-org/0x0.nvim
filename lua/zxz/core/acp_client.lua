@@ -589,6 +589,7 @@ local function _completion_prompt(request)
     "",
     "Rules:",
     "- Return ONLY the raw text to insert at the cursor. No prose, no explanations.",
+    "- Do not include thinking, preambles, or text like 'Let me think about this'.",
     "- No markdown fences, no language tags, no comments about the code.",
     "- Do not repeat any text from <prefix> or <suffix>.",
     "- Prefer a single line. Stop at the end of the current phrase, expression,",

@@ -1,8 +1,8 @@
 # 0x0.nvim
 
-Inline ghost-text completion for Neovim, backed by an ACP provider over stdio
-(`codex-acp` by default; `claude-acp`, `claude-agent-acp`, and `gemini-acp` also
-wired up).
+Inline ghost-text completion for Neovim, backed by an ACP provider over stdio.
+Users choose a model; 0x0 routes that model to the connected provider
+internally. Cursor support uses `cursor-agent acp`.
 
 ## Install
 
@@ -14,7 +14,7 @@ Example with lazy.nvim:
   opts = {
     complete = {
       enabled = true,
-      provider = "codex-acp",
+      model = "gpt-5-codex",
       keymaps = {
         enabled = true,
         accept = "<Tab>",
@@ -33,9 +33,9 @@ require("zxz").setup({
 })
 ```
 
-Ghost text streams from the configured ACP provider as you type, with caching
-and debouncing. `:ZxzCompleteSettings` opens a live settings picker.
-`:ZxzLog` opens the debug log.
+Ghost text streams from the model connected to `complete.model` as you type,
+with caching and debouncing. `:ZxzCompleteSettings` lets users toggle
+completion and pick the model. `:ZxzLog` opens the debug log.
 
 ### nvim-cmp coexistence
 
@@ -46,12 +46,11 @@ yourself.
 
 ## Configuration
 
-- **`complete.*`** — completion settings (provider, debounce, cache, keymaps,
+- **`complete.*`** — completion settings (model, debounce, cache, keymaps,
   timeouts). See `lua/zxz/core/config.lua` for defaults.
-- **`complete.provider`** — ACP provider id (`codex-acp`, `claude-acp`, etc.).
-- Top-level **`provider`** is the fallback when `complete.provider` is unset.
-- **`complete.acp`** — optional override table with a custom `command`.
+- **`complete.model`** — user-facing model name. Provider routing is derived
+  internally.
+- **`complete.models`** — model names shown by `:ZxzCompleteSettings`.
 
-Legacy chat/agent defaults from earlier 0x0 versions live in
-`config.legacy_defaults` for downstream forks; the completion plugin does not
-read them.
+Thinking/reasoning model variants are filtered out for completion, because
+ghost text must be insertable code rather than assistant preamble.

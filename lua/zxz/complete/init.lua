@@ -1,22 +1,14 @@
 --- 0x0-completion: Inline ghost text code completions.
---- Dispatches to an ACP provider over stdio, or to the cursor-agent CLI
---- (provider.kind == "cursor") for one-shot headless completions.
+--- Dispatches to an ACP provider over stdio. Cursor is supported via
+--- `cursor-agent acp`, not the one-shot CLI path.
 
 local config = require("zxz.core.config")
 local context = require("zxz.complete.context")
 local client = require("zxz.core.acp_client")
-local cursor_client = require("zxz.core.cursor_client")
 local ghost = require("zxz.complete.ghost")
 local debounce = require("zxz.complete.debounce")
 local cache = require("zxz.complete.cache")
 local log = require("zxz.core.log")
-
-local function stream_for(provider)
-  if provider and provider.kind == "cursor" then
-    return cursor_client.stream_completion
-  end
-  return client.stream_completion
-end
 
 local function format_err(err)
   if err == nil then
@@ -85,9 +77,14 @@ local function resolve_provider()
   local provider, err = config.resolve_completion_provider()
   if not provider then
     vim.notify("0x0 completion: " .. tostring(err or "provider not configured"), vim.log.levels.ERROR)
-    return nil
+    return nil, nil
   end
-  return provider
+  local model = config.resolve_completion_model(provider, config.current.complete and config.current.complete.model)
+  if not model then
+    vim.notify("0x0 completion: no non-thinking model configured", vim.log.levels.ERROR)
+    return nil, nil
+  end
+  return provider, model
 end
 
 local function visible_completion(text, before)
@@ -99,6 +96,9 @@ local function visible_completion(text, before)
   end
   local first_line = vim.split(text, "\n", { plain = true })[1] or ""
   if vim.trim(first_line) == "" then
+    return nil
+  end
+  if vim.trim(first_line):lower():find("^let me think") then
     return nil
   end
   return text
@@ -260,7 +260,7 @@ function M._request_completion()
     return
   end
   local cwd = project_cwd()
-  local provider = resolve_provider()
+  local provider, model = resolve_provider()
   if not provider then
     return
   end
@@ -280,7 +280,7 @@ function M._request_completion()
   _streaming_text = ""
   _visible_text = ""
 
-  _abort_fn = stream_for(provider)(provider, {
+  _abort_fn = client.stream_completion(provider, {
     prefix = ctx.prefix,
     suffix = ctx.suffix,
     language = ctx.language,
@@ -288,7 +288,7 @@ function M._request_completion()
     cwd = cwd,
     max_tokens = cfg.max_tokens,
     temperature = cfg.temperature,
-    model = cfg.model,
+    model = model,
   }, function(chunk)
     if request_id ~= _request_id then
       return
@@ -396,76 +396,19 @@ function M.toggle()
 end
 
 local function choose_model()
-  vim.ui.input({
+  local choices = config.completion_model_choices()
+  vim.ui.select(choices, {
     prompt = "0x0 completion model",
-    default = tostring(config.current.complete.model or ""),
-  }, function(value)
-    if value == nil then
-      return
-    end
-    if value == "" then
-      config.current.complete.model = nil
-      return
-    end
-    config.current.complete.model = value
-  end)
-end
-
-local function choose_temperature()
-  vim.ui.input({
-    prompt = "0x0 completion temperature",
-    default = tostring(config.current.complete.temperature or 0),
-  }, function(value)
-    local temperature = tonumber(value)
-    if not temperature then
-      return
-    end
-    config.current.complete.temperature = math.max(0, math.min(2, temperature))
-  end)
-end
-
-local function choose_max_tokens()
-  vim.ui.input({
-    prompt = "0x0 completion max tokens",
-    default = tostring(config.current.complete.max_tokens or 128),
-  }, function(value)
-    local max_tokens = tonumber(value)
-    if not max_tokens then
-      return
-    end
-    config.current.complete.max_tokens = math.max(1, math.floor(max_tokens))
-  end)
-end
-
-local function choose_provider()
-  local ids = {}
-  for id in pairs(config.current.providers or {}) do
-    ids[#ids + 1] = id
-  end
-  table.sort(ids)
-  vim.ui.select(ids, {
-    prompt = "0x0 completion provider",
-    format_item = function(id)
-      local provider = config.current.providers[id] or {}
-      return (provider.name and provider.name ~= "" and provider.name or id) .. " (" .. id .. ")"
+    format_item = function(model)
+      return model
     end,
   }, function(choice)
     if not choice then
       return
     end
-    config.current.complete.provider = choice
-    config.current.complete.acp = nil
+    config.current.complete.model = choice
     M.dismiss()
   end)
-end
-
-local function provider_label()
-  local complete = config.current.complete or {}
-  local override = complete.acp
-  if type(override) == "table" and override.command and override.command ~= "" then
-    return tostring(override.command)
-  end
-  return tostring(complete.provider or config.current.provider or "provider default")
 end
 
 function M.settings()
@@ -475,20 +418,8 @@ function M.settings()
       run = M.toggle,
     },
     {
-      label = "Provider: " .. provider_label(),
-      run = choose_provider,
-    },
-    {
       label = "Model: " .. tostring(config.current.complete.model or "provider default"),
       run = choose_model,
-    },
-    {
-      label = "Max tokens: " .. tostring(config.current.complete.max_tokens),
-      run = choose_max_tokens,
-    },
-    {
-      label = "Temperature: " .. tostring(config.current.complete.temperature),
-      run = choose_temperature,
     },
   }
 

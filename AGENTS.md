@@ -10,17 +10,15 @@ line tying it to an observable failure mode.
 
 0x0.nvim is an **inline ghost-text completion plugin** for Neovim:
 
-- **ACP providers** (`codex-acp`, `claude-acp`, `claude-agent-acp`, `gemini-acp`)
-  communicate over stdio via `lua/zxz/core/acp_client.lua` and
-  `lua/zxz/core/acp_transport.lua`.
-- **Cursor CLI** (`cursor-agent`) is an optional one-shot backend when
-  `provider.kind == "cursor"`.
+- **ACP providers** (`codex-acp`, `claude-acp`, `gemini-acp`,
+  `cursor-agent acp`) communicate over stdio via `lua/zxz/core/acp_client.lua`
+  and `lua/zxz/core/acp_transport.lua`.
 - **`lua/zxz/complete/`** owns debouncing, context gathering, ghost rendering,
   caching, and insert-mode keymaps.
 
 User-facing commands:
 
-- **`:ZxzCompleteSettings`** — toggle provider, model, temperature, etc.
+- **`:ZxzCompleteSettings`** — toggle completion and select a model.
 - **`:ZxzLog`** — open the persistent debug log.
 
 Forbidden: re-adding a chat panel, worktree review UI, permission ledger,
@@ -68,13 +66,13 @@ focused on inline completion only.
 
 `lua/zxz/core/config.lua`.
 
-- **`complete.*`** — completion-specific settings (provider, debounce, cache,
+- **`complete.*`** — completion-specific settings (model, debounce, cache,
   keymaps, timeouts).
-- **`complete.provider`** selects the ACP backend; falls back to top-level
-  `provider` when unset.
-- **`complete.acp`** — optional override table with a custom `command`.
-- Legacy chat-era defaults live in `M.legacy_defaults` for forks that still
-  merge them via `setup()`; the completion plugin does not read them.
+- **`complete.model`** is the user-facing selection. Provider routing is derived
+  from the model via `complete.model_providers`.
+- **Thinking/reasoning model variants must not be exposed for completion.**
+  **Why:** those variants can leak assistant preambles such as "Let me think
+  about this" into ghost text.
 
 ---
 
@@ -93,7 +91,12 @@ Currently pinned regression tests:
 | Multiline ghost render/accept | `complete_spec.lua::"renders and accepts multiline ghost text"` |
 | No ghost mid-line | `complete_spec.lua::"does not render ghost text in the middle of a line"` |
 | Nofile buffer gate | `complete_spec.lua::"does not request completions for nofile buffers"` |
-| Provider resolution + prefix strip | `complete_spec.lua::"uses the resolved provider and drops repeated prefix text"` |
+| Model routing + prefix strip | `complete_spec.lua::"uses the resolved provider and drops repeated prefix text"` |
+| Cursor ACP model routing | `complete_spec.lua::"routes the selected model to its ACP provider"` |
+| Thinking model filtering | `complete_spec.lua::"filters thinking models from completion choices"` |
+| Thinking preamble suppression | `complete_spec.lua::"does not render thinking preambles as ghost text"` |
+| Thinking model fallback | `complete_spec.lua::"falls back from thinking model names before routing"` |
+| Settings surface | `complete_spec.lua::"settings exposes only completion toggle and model selection"` |
 | Mid-line request gate | `complete_spec.lua::"does not request completions in the middle of a line"` |
 | Multiline streaming | `complete_spec.lua::"keeps multiline streamed completions displayable"` |
 | Stream error notify | `complete_spec.lua::"notifies the user when a streamed completion fails"` |
@@ -103,5 +106,4 @@ Currently pinned regression tests:
 | Bounded context reads | `context_spec.lua::"reads bounded prefix lines on large buffers"` |
 | Unsaved buffer filepath | `context_spec.lua::"uses an untitled filepath for unnamed buffers"` |
 | ACP session close on finish | `acp_completion_spec.lua::"finish closes the session after a successful prompt"` |
-| Cursor stream-json deltas | `cursor_client_spec.lua::"streams running-total assistant text as deltas"` |
 | Debug log levels | `log_spec.lua::"appends timestamped lines at each level"` |
