@@ -35,21 +35,36 @@ local THINKING_MODEL_DENYLIST = {
 }
 
 local DEFAULT_COMPLETION_MODELS = {
-  "gpt-5-codex",
-  "gpt-5",
-  "claude-haiku-4-5",
+  "gpt-5.3-codex",
+  "gpt-5.5",
+  "claude-opus-4-8",
   "claude-sonnet-4-6",
-  "claude-opus-4-7",
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
-  "sonnet-4",
+  "claude-haiku-4-5-20251001",
+  "gemini-3.5-flash",
+  "gemini-3.1-pro-preview",
+  "gemini-3-flash-preview",
+  "gemini-3.1-flash-lite",
+  "composer-2.5",
+  "composer-2.5-fast",
 }
 
 local DEFAULT_COMPLETION_MODEL_PROVIDERS = {
+  ["gpt-5.3-codex"] = "codex-acp",
+  ["gpt-5.5"] = "codex-acp",
+  ["claude-opus-4-8"] = "claude-acp",
+  ["claude-sonnet-4-6"] = "claude-acp",
+  ["claude-haiku-4-5-20251001"] = "claude-acp",
+  ["gemini-3.5-flash"] = "gemini-acp",
+  ["gemini-3.1-pro-preview"] = "gemini-acp",
+  ["gemini-3-flash-preview"] = "gemini-acp",
+  ["gemini-3.1-flash-lite"] = "gemini-acp",
+  ["composer-2.5"] = "cursor-acp",
+  ["composer-2.5-fast"] = "cursor-acp",
+
+  -- Backward-compatible model names from older defaults.
   ["gpt-5-codex"] = "codex-acp",
   ["gpt-5"] = "codex-acp",
   ["claude-haiku-4-5"] = "claude-acp",
-  ["claude-sonnet-4-6"] = "claude-acp",
   ["claude-opus-4-7"] = "claude-acp",
   ["gemini-2.5-flash"] = "gemini-acp",
   ["gemini-2.5-pro"] = "gemini-acp",
@@ -63,7 +78,7 @@ M.defaults = {
   initialize_retries = 3,
   complete = {
     enabled = true,
-    model = "gpt-5-codex",
+    model = "gpt-5.3-codex",
     models = vim.deepcopy(DEFAULT_COMPLETION_MODELS),
     model_providers = vim.deepcopy(DEFAULT_COMPLETION_MODEL_PROVIDERS),
     debounce_ms = 150,
@@ -102,8 +117,8 @@ M.defaults = {
     ["claude-acp"] = {
       name = "Claude ACP",
       command = "claude-acp",
-      model = "claude-haiku-4-5",
-      models = { "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5" },
+      model = "claude-haiku-4-5-20251001",
+      models = { "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001" },
       ignore_stderr_patterns = DEFAULT_STDERR_PATTERNS["claude-acp"],
     },
     ["codex-acp"] = {
@@ -111,22 +126,22 @@ M.defaults = {
       command = "codex-acp",
       args = { "-c", "notify=[]" },
       auth_method = "chatgpt",
-      model = "gpt-5-codex",
-      models = { "gpt-5-codex", "gpt-5" },
+      model = "gpt-5.3-codex",
+      models = { "gpt-5.3-codex", "gpt-5.5" },
     },
     ["gemini-acp"] = {
       name = "Gemini ACP",
       command = "gemini",
       args = { "--acp" },
-      model = "gemini-2.5-flash",
-      models = { "gemini-2.5-pro", "gemini-2.5-flash" },
+      model = "gemini-3.5-flash",
+      models = { "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite" },
     },
     ["cursor-acp"] = {
       name = "Cursor ACP",
       command = "cursor-agent",
       args = { "acp" },
-      model = "sonnet-4",
-      models = { "sonnet-4" },
+      model = "composer-2.5-fast",
+      models = { "composer-2.5", "composer-2.5-fast" },
     },
   },
 }
@@ -163,6 +178,10 @@ local function model_in_list(models, model)
     end
   end
   return false
+end
+
+local function provider_accepts_model(provider, model)
+  return not provider.command or provider.model == model or model_in_list(provider.models, model)
 end
 
 ---@param model string
@@ -277,13 +296,13 @@ function M.resolve_completion_model(provider, requested_model)
     return requested_model
   end
 
-  if type(provider.model) == "string" and provider.model ~= "" and not M.is_thinking_model(provider.model) then
-    return provider.model
+  local configured_model = first_non_thinking_model(M.completion_model_choices())
+  if configured_model and provider_accepts_model(provider, configured_model) then
+    return configured_model
   end
 
-  local configured_model = first_non_thinking_model(M.completion_model_choices())
-  if configured_model and (not provider.command or model_in_list(provider.models, configured_model)) then
-    return configured_model
+  if type(provider.model) == "string" and provider.model ~= "" and not M.is_thinking_model(provider.model) then
+    return provider.model
   end
 
   return first_non_thinking_model(provider.models)

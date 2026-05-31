@@ -128,7 +128,7 @@ describe("inline completion", function()
 
     assert.is_truthy(captured)
     assert.are.equal("codex-acp", captured.provider.command)
-    assert.are.equal("gpt-5-codex", captured.request.model)
+    assert.are.equal("gpt-5.3-codex", captured.request.model)
     assert.are.equal(vim.fn.getcwd(), captured.request.cwd)
     assert.are.equal("42", ghost.get_text())
   end)
@@ -137,7 +137,7 @@ describe("inline completion", function()
     config.setup({
       complete = {
         cache = { enabled = false },
-        model = "sonnet-4",
+        model = "composer-2.5",
       },
     })
     package.loaded["zxz.complete"] = nil
@@ -171,17 +171,17 @@ describe("inline completion", function()
     assert.is_truthy(captured)
     assert.are.equal("cursor-agent", captured.provider.command)
     assert.are.same({ "acp" }, captured.provider.args)
-    assert.are.equal("sonnet-4", captured.request.model)
+    assert.are.equal("composer-2.5", captured.request.model)
   end)
 
   it("filters thinking models from completion choices", function()
     config.setup({
       complete = {
-        models = { "sonnet-4-thinking", "gpt-5", "o3", "claude-reasoning-test" },
+        models = { "composer-2.5-thinking", "gpt-5.5", "o3", "claude-reasoning-test" },
       },
     })
 
-    assert.are.same({ "gpt-5" }, config.completion_model_choices())
+    assert.are.same({ "gpt-5.5" }, config.completion_model_choices())
   end)
 
   it("does not render thinking preambles as ghost text", function()
@@ -217,8 +217,8 @@ describe("inline completion", function()
     config.setup({
       complete = {
         cache = { enabled = false },
-        model = "sonnet-4-thinking",
-        models = { "sonnet-4-thinking", "sonnet-4" },
+        model = "composer-2.5-thinking",
+        models = { "composer-2.5-thinking", "composer-2.5" },
       },
     })
     package.loaded["zxz.complete"] = nil
@@ -251,7 +251,7 @@ describe("inline completion", function()
 
     assert.is_truthy(captured)
     assert.are.equal("cursor-agent", captured.provider.command)
-    assert.are.equal("sonnet-4", captured.request.model)
+    assert.are.equal("composer-2.5", captured.request.model)
   end)
 
   it("settings exposes only completion toggle and model selection", function()
@@ -269,6 +269,20 @@ describe("inline completion", function()
     assert.are.equal(2, #captured)
     assert.is_truthy(captured[1].label:match("^Enabled:"))
     assert.is_truthy(captured[2].label:match("^Model:"))
+  end)
+
+  it("model choices expose model names without provider names", function()
+    local choices = config.completion_model_choices()
+    local seen = {}
+    for _, choice in ipairs(choices) do
+      seen[choice] = true
+      assert.is_nil(choice:match("%-acp$"))
+    end
+
+    assert.is_true(seen["gpt-5.3-codex"])
+    assert.is_true(seen["claude-opus-4-8"])
+    assert.is_true(seen["gemini-3.5-flash"])
+    assert.is_true(seen["composer-2.5"])
   end)
 
   it("does not request completions in the middle of a line", function()

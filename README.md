@@ -14,7 +14,7 @@ Example with lazy.nvim:
   opts = {
     complete = {
       enabled = true,
-      model = "gpt-5-codex",
+      model = "gpt-5.3-codex",
       keymaps = {
         enabled = true,
         accept = "<Tab>",
