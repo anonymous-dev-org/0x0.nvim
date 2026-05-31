@@ -7,7 +7,7 @@ local M = {}
 -- Some requests are inherently long-running (a streaming model turn) and
 -- should not be timed out by the per-request watchdog.
 local NON_TIMED_METHODS = {
-  ["session/prompt"] = true,
+	["session/prompt"] = true,
 }
 
 local Client = {}
@@ -16,89 +16,96 @@ Client.__index = Client
 ---@param provider { command: string, args?: string[], env?: table<string, string>, name?: string }
 ---@param opts? { host_fs?: boolean }
 function M.new(provider, opts)
-  opts = opts or {}
-  local self = setmetatable({
-    provider = provider,
-    state = "disconnected",
-    id_counter = 0,
-    callbacks = {},
-    notification_handlers = {},
-    ready_listeners = {},
-    subscribers = {},
-    agent_info = nil,
-    agent_capabilities = nil,
-    protocol_version = 1,
-    host_fs = opts.host_fs and true or false,
-  }, Client)
+	opts = opts or {}
+	local self = setmetatable({
+		provider = provider,
+		state = "disconnected",
+		id_counter = 0,
+		callbacks = {},
+		notification_handlers = {},
+		ready_listeners = {},
+		subscribers = {},
+		agent_info = nil,
+		agent_capabilities = nil,
+		protocol_version = 1,
+		host_fs = opts.host_fs and true or false,
+	}, Client)
 
-  self.transport = transport_mod.create(provider, {
-    on_state = function(state)
-      self:_on_state(state)
-    end,
-    on_message = function(msg)
-      self:_on_message(msg)
-    end,
-    on_exit = function(code, stderr_lines)
-      if code ~= 0 then
-        local stderr_blob = table.concat(stderr_lines, "\n")
-        log.error(("acp[%s]: exited with code %d\n%s"):format(provider.name or provider.command, code, stderr_blob))
-        vim.notify(
-          ("acp[%s]: exited with code %d (see :ZxzLog for details)"):format(provider.name or provider.command, code),
-          vim.log.levels.ERROR
-        )
-      end
-    end,
-    on_idle = function(ms)
-      log.error(("acp[%s]: idle for %d ms — provider considered hung"):format(provider.name or provider.command, ms))
-      self:_fail_all_pending({
-        code = -32001,
-        message = "provider hung (no I/O)",
-      })
-    end,
-  }, { idle_kill_ms = config.current.idle_kill_ms or 0 })
+	self.transport = transport_mod.create(provider, {
+		on_state = function(state)
+			self:_on_state(state)
+		end,
+		on_message = function(msg)
+			self:_on_message(msg)
+		end,
+		on_exit = function(code, stderr_lines)
+			if code ~= 0 then
+				local stderr_blob = table.concat(stderr_lines, "\n")
+				log.error(
+					("acp[%s]: exited with code %d\n%s"):format(provider.name or provider.command, code, stderr_blob)
+				)
+				vim.notify(
+					("acp[%s]: exited with code %d (see :ZxzLog for details)"):format(
+						provider.name or provider.command,
+						code
+					),
+					vim.log.levels.ERROR
+				)
+			end
+		end,
+		on_idle = function(ms)
+			log.error(
+				("acp[%s]: idle for %d ms — provider considered hung"):format(provider.name or provider.command, ms)
+			)
+			self:_fail_all_pending({
+				code = -32001,
+				message = "provider hung (no I/O)",
+			})
+		end,
+	}, { idle_kill_ms = config.current.idle_kill_ms or 0 })
 
-  return self
+	return self
 end
 
 function Client:_on_state(state)
-  self.state = state
-  if state == "disconnected" or state == "error" then
-    self:_fail_all_pending({ code = -32000, message = "transport " .. state })
-    local listeners = self.ready_listeners
-    self.ready_listeners = {}
-    for _, listener in ipairs(listeners) do
-      vim.schedule(function()
-        pcall(listener, nil, { code = -32000, message = "transport " .. state })
-      end)
-    end
-  end
+	self.state = state
+	if state == "disconnected" or state == "error" then
+		self:_fail_all_pending({ code = -32000, message = "transport " .. state })
+		local listeners = self.ready_listeners
+		self.ready_listeners = {}
+		for _, listener in ipairs(listeners) do
+			vim.schedule(function()
+				pcall(listener, nil, { code = -32000, message = "transport " .. state })
+			end)
+		end
+	end
 end
 
 ---Reject every pending callback with err. Used by transport disconnects and
 ---the idle watchdog so callers aren't left hanging.
 ---@param err table
 function Client:_fail_all_pending(err)
-  local pending = self.callbacks
-  self.callbacks = {}
-  for id, entry in pairs(pending) do
-    if entry.timer then
-      pcall(function()
-        entry.timer:stop()
-        entry.timer:close()
-      end)
-    end
-    vim.schedule(function()
-      pcall(entry.cb, nil, err)
-    end)
-  end
-  if self.transport and self.transport.set_idle_armed then
-    self.transport:set_idle_armed(false)
-  end
+	local pending = self.callbacks
+	self.callbacks = {}
+	for id, entry in pairs(pending) do
+		if entry.timer then
+			pcall(function()
+				entry.timer:stop()
+				entry.timer:close()
+			end)
+		end
+		vim.schedule(function()
+			pcall(entry.cb, nil, err)
+		end)
+	end
+	if self.transport and self.transport.set_idle_armed then
+		self.transport:set_idle_armed(false)
+	end
 end
 
 function Client:_next_id()
-  self.id_counter = self.id_counter + 1
-  return self.id_counter
+	self.id_counter = self.id_counter + 1
+	return self.id_counter
 end
 
 ---@param method string
@@ -107,101 +114,101 @@ end
 ---@param opts? { timeout_ms?: integer }
 ---@return integer id
 function Client:request(method, params, callback, opts)
-  opts = opts or {}
-  local id = self:_next_id()
-  local entry = { cb = callback, method = method }
-  self.callbacks[id] = entry
+	opts = opts or {}
+	local id = self:_next_id()
+	local entry = { cb = callback, method = method }
+	self.callbacks[id] = entry
 
-  local timeout = opts.timeout_ms
-  if timeout == nil then
-    timeout = config.current.request_timeout_ms or 0
-    if NON_TIMED_METHODS[method] then
-      timeout = 0
-    end
-  end
-  if timeout > 0 then
-    local timer = vim.uv.new_timer()
-    entry.timer = timer
-    timer:start(
-      timeout,
-      0,
-      vim.schedule_wrap(function()
-        local pending = self.callbacks[id]
-        if not pending then
-          return
-        end
-        self.callbacks[id] = nil
-        if pending.timer then
-          pcall(function()
-            pending.timer:stop()
-            pending.timer:close()
-          end)
-        end
-        log.warn(("acp: request '%s' (id=%d) timed out after %d ms"):format(method, id, timeout))
-        pcall(pending.cb, nil, {
-          code = -32001,
-          message = "request timed out",
-          data = { method = method },
-        })
-      end)
-    )
-  end
+	local timeout = opts.timeout_ms
+	if timeout == nil then
+		timeout = config.current.request_timeout_ms or 0
+		if NON_TIMED_METHODS[method] then
+			timeout = 0
+		end
+	end
+	if timeout > 0 then
+		local timer = vim.uv.new_timer()
+		entry.timer = timer
+		timer:start(
+			timeout,
+			0,
+			vim.schedule_wrap(function()
+				local pending = self.callbacks[id]
+				if not pending then
+					return
+				end
+				self.callbacks[id] = nil
+				if pending.timer then
+					pcall(function()
+						pending.timer:stop()
+						pending.timer:close()
+					end)
+				end
+				log.warn(("acp: request '%s' (id=%d) timed out after %d ms"):format(method, id, timeout))
+				pcall(pending.cb, nil, {
+					code = -32001,
+					message = "request timed out",
+					data = { method = method },
+				})
+			end)
+		)
+	end
 
-  if self.transport and self.transport.set_idle_armed then
-    self.transport:set_idle_armed(true)
-  end
+	if self.transport and self.transport.set_idle_armed then
+		self.transport:set_idle_armed(true)
+	end
 
-  local data = vim.json.encode({
-    jsonrpc = "2.0",
-    id = id,
-    method = method,
-    params = params or vim.empty_dict(),
-  })
-  self.transport:send(data)
-  return id
+	local data = vim.json.encode({
+		jsonrpc = "2.0",
+		id = id,
+		method = method,
+		params = params or vim.empty_dict(),
+	})
+	self.transport:send(data)
+	return id
 end
 
 ---@param id integer|nil
 function Client:forget_request(id)
-  if not id then
-    return
-  end
-  local entry = self.callbacks[id]
-  if not entry then
-    return
-  end
-  self.callbacks[id] = nil
-  if entry.timer then
-    pcall(function()
-      entry.timer:stop()
-      entry.timer:close()
-    end)
-  end
-  if not next(self.callbacks) and self.transport and self.transport.set_idle_armed then
-    self.transport:set_idle_armed(false)
-  end
+	if not id then
+		return
+	end
+	local entry = self.callbacks[id]
+	if not entry then
+		return
+	end
+	self.callbacks[id] = nil
+	if entry.timer then
+		pcall(function()
+			entry.timer:stop()
+			entry.timer:close()
+		end)
+	end
+	if not next(self.callbacks) and self.transport and self.transport.set_idle_armed then
+		self.transport:set_idle_armed(false)
+	end
 end
 
 ---@param method string
 ---@param params table|nil
 function Client:notify(method, params)
-  local data = vim.json.encode({
-    jsonrpc = "2.0",
-    method = method,
-    params = params or vim.empty_dict(),
-  })
-  self.transport:send(data)
+	local data = vim.json.encode({
+		jsonrpc = "2.0",
+		method = method,
+		params = params or vim.empty_dict(),
+	})
+	self.transport:send(data)
 end
 
 ---@param id integer
 ---@param result table|nil
 function Client:respond(id, result)
-  local data = vim.json.encode({
-    jsonrpc = "2.0",
-    id = id,
-    result = result or vim.empty_dict(),
-  })
-  self.transport:send(data)
+	local data = vim.json.encode({
+		jsonrpc = "2.0",
+		id = id,
+		result = result or vim.empty_dict(),
+	})
+	self.transport:send(data)
 end
 
 ---@param id integer
@@ -209,210 +216,210 @@ end
 ---@param message string
 ---@param data? table
 function Client:respond_error(id, code, message, data)
-  local err = { code = code, message = message }
-  if data then
-    err.data = data
-  end
-  local payload = vim.json.encode({ jsonrpc = "2.0", id = id, error = err })
-  self.transport:send(payload)
+	local err = { code = code, message = message }
+	if data then
+		err.data = data
+	end
+	local payload = vim.json.encode({ jsonrpc = "2.0", id = id, error = err })
+	self.transport:send(payload)
 end
 
 ---@param method string
 ---@param handler fun(params: table, message_id: integer|nil)
 function Client:on_notification(method, handler)
-  self.notification_handlers[method] = handler
+	self.notification_handlers[method] = handler
 end
 
 function Client:_on_message(message)
-  if message.method and message.result == nil and message.error == nil then
-    local handler = self.notification_handlers[message.method]
-    if handler then
-      vim.schedule(function()
-        handler(message.params or {}, message.id)
-      end)
-    else
-      vim.schedule(function()
-        vim.notify("acp: unhandled notification " .. message.method, vim.log.levels.DEBUG)
-      end)
-    end
-    return
-  end
+	if message.method and message.result == nil and message.error == nil then
+		local handler = self.notification_handlers[message.method]
+		if handler then
+			vim.schedule(function()
+				handler(message.params or {}, message.id)
+			end)
+		else
+			vim.schedule(function()
+				vim.notify("acp: unhandled notification " .. message.method, vim.log.levels.DEBUG)
+			end)
+		end
+		return
+	end
 
-  if message.id ~= nil and (message.result ~= nil or message.error ~= nil) then
-    local entry = self.callbacks[message.id]
-    if entry then
-      self.callbacks[message.id] = nil
-      if entry.timer then
-        pcall(function()
-          entry.timer:stop()
-          entry.timer:close()
-        end)
-      end
-      if not next(self.callbacks) and self.transport and self.transport.set_idle_armed then
-        self.transport:set_idle_armed(false)
-      end
-      vim.schedule(function()
-        entry.cb(message.result, message.error)
-      end)
-    end
-    return
-  end
+	if message.id ~= nil and (message.result ~= nil or message.error ~= nil) then
+		local entry = self.callbacks[message.id]
+		if entry then
+			self.callbacks[message.id] = nil
+			if entry.timer then
+				pcall(function()
+					entry.timer:stop()
+					entry.timer:close()
+				end)
+			end
+			if not next(self.callbacks) and self.transport and self.transport.set_idle_armed then
+				self.transport:set_idle_armed(false)
+			end
+			vim.schedule(function()
+				entry.cb(message.result, message.error)
+			end)
+		end
+		return
+	end
 
-  vim.schedule(function()
-    if message.error then
-      vim.notify("acp: provider error without request id: " .. vim.inspect(message.error), vim.log.levels.WARN)
-      return
-    end
-    vim.notify("acp: unknown message shape: " .. vim.inspect(message), vim.log.levels.WARN)
-  end)
+	vim.schedule(function()
+		if message.error then
+			vim.notify("acp: provider error without request id: " .. vim.inspect(message.error), vim.log.levels.WARN)
+			return
+		end
+		vim.notify("acp: unknown message shape: " .. vim.inspect(message), vim.log.levels.WARN)
+	end)
 end
 
 ---@param on_ready fun(self: table)|nil
 function Client:start(on_ready)
-  if on_ready then
-    self.ready_listeners[#self.ready_listeners + 1] = on_ready
-  end
+	if on_ready then
+		self.ready_listeners[#self.ready_listeners + 1] = on_ready
+	end
 
-  self:on_notification("session/update", function(params)
-    local sub = self.subscribers[params.sessionId]
-    if sub and sub.on_update then
-      sub.on_update(params.update or {})
-    end
-  end)
+	self:on_notification("session/update", function(params)
+		local sub = self.subscribers[params.sessionId]
+		if sub and sub.on_update then
+			sub.on_update(params.update or {})
+		end
+	end)
 
-  self:on_notification("session/request_permission", function(params, message_id)
-    local sub = self.subscribers[params.sessionId]
-    if not sub or not sub.on_request_permission then
-      self:respond(message_id, { outcome = { outcome = "cancelled" } })
-      return
-    end
-    if self.transport and self.transport.set_idle_armed then
-      self.transport:set_idle_armed(false)
-    end
-    sub.on_request_permission(params, function(option_id)
-      if not option_id or option_id == "" then
-        self:respond(message_id, { outcome = { outcome = "cancelled" } })
-        if next(self.callbacks) and self.transport and self.transport.set_idle_armed then
-          self.transport:set_idle_armed(true)
-        end
-        return
-      end
-      self:respond(message_id, { outcome = { outcome = "selected", optionId = option_id } })
-      if next(self.callbacks) and self.transport and self.transport.set_idle_armed then
-        self.transport:set_idle_armed(true)
-      end
-    end)
-  end)
+	self:on_notification("session/request_permission", function(params, message_id)
+		local sub = self.subscribers[params.sessionId]
+		if not sub or not sub.on_request_permission then
+			self:respond(message_id, { outcome = { outcome = "cancelled" } })
+			return
+		end
+		if self.transport and self.transport.set_idle_armed then
+			self.transport:set_idle_armed(false)
+		end
+		sub.on_request_permission(params, function(option_id)
+			if not option_id or option_id == "" then
+				self:respond(message_id, { outcome = { outcome = "cancelled" } })
+				if next(self.callbacks) and self.transport and self.transport.set_idle_armed then
+					self.transport:set_idle_armed(true)
+				end
+				return
+			end
+			self:respond(message_id, { outcome = { outcome = "selected", optionId = option_id } })
+			if next(self.callbacks) and self.transport and self.transport.set_idle_armed then
+				self.transport:set_idle_armed(true)
+			end
+		end)
+	end)
 
-  self:on_notification("fs/read_text_file", function(params, message_id)
-    if message_id == nil then
-      return
-    end
-    local sub = self.subscribers[params.sessionId]
-    if not sub or not sub.on_fs_read_text_file then
-      self:respond_error(message_id, -32601, "fs/read_text_file not handled")
-      return
-    end
-    sub.on_fs_read_text_file(params, function(content, err)
-      if err then
-        local code = err.code or -32000
-        self:respond_error(message_id, code, err.message or tostring(err), err.data)
-        return
-      end
-      self:respond(message_id, { content = content or "" })
-    end)
-  end)
+	self:on_notification("fs/read_text_file", function(params, message_id)
+		if message_id == nil then
+			return
+		end
+		local sub = self.subscribers[params.sessionId]
+		if not sub or not sub.on_fs_read_text_file then
+			self:respond_error(message_id, -32601, "fs/read_text_file not handled")
+			return
+		end
+		sub.on_fs_read_text_file(params, function(content, err)
+			if err then
+				local code = err.code or -32000
+				self:respond_error(message_id, code, err.message or tostring(err), err.data)
+				return
+			end
+			self:respond(message_id, { content = content or "" })
+		end)
+	end)
 
-  self:on_notification("fs/write_text_file", function(params, message_id)
-    if message_id == nil then
-      return
-    end
-    local sub = self.subscribers[params.sessionId]
-    if not sub or not sub.on_fs_write_text_file then
-      self:respond_error(message_id, -32601, "fs/write_text_file not handled")
-      return
-    end
-    sub.on_fs_write_text_file(params, function(err)
-      if err then
-        local code = err.code or -32000
-        self:respond_error(message_id, code, err.message or tostring(err), err.data)
-        return
-      end
-      self:respond(message_id, vim.empty_dict())
-    end)
-  end)
+	self:on_notification("fs/write_text_file", function(params, message_id)
+		if message_id == nil then
+			return
+		end
+		local sub = self.subscribers[params.sessionId]
+		if not sub or not sub.on_fs_write_text_file then
+			self:respond_error(message_id, -32601, "fs/write_text_file not handled")
+			return
+		end
+		sub.on_fs_write_text_file(params, function(err)
+			if err then
+				local code = err.code or -32000
+				self:respond_error(message_id, code, err.message or tostring(err), err.data)
+				return
+			end
+			self:respond(message_id, vim.empty_dict())
+		end)
+	end)
 
-  self.transport:start()
-  self.state = "initializing"
-  self:_initialize_with_retry(0)
+	self.transport:start()
+	self.state = "initializing"
+	self:_initialize_with_retry(0)
 end
 
 local INITIALIZE_BACKOFF_MS = { 250, 500, 1000 }
 
 function Client:_initialize_with_retry(attempt)
-  local max = config.current.initialize_retries or 3
-  self:request("initialize", {
-    protocolVersion = self.protocol_version,
-    clientInfo = { name = "0x0.nvim", version = "0.1.0" },
-    clientCapabilities = {
-      fs = {
-        readTextFile = self.host_fs,
-        writeTextFile = self.host_fs,
-      },
-      terminal = false,
-    },
-  }, function(result, err)
-    if err or not result then
-      if attempt + 1 < max then
-        local delay = INITIALIZE_BACKOFF_MS[attempt + 1] or 1000
-        log.warn(
-          ("acp: initialize failed (attempt %d/%d), retrying in %d ms: %s"):format(
-            attempt + 1,
-            max,
-            delay,
-            vim.inspect(err)
-          )
-        )
-        vim.defer_fn(function()
-          if self.state ~= "initializing" then
-            return
-          end
-          self:_initialize_with_retry(attempt + 1)
-        end, delay)
-        return
-      end
-      log.error("acp: initialize failed after retries: " .. vim.inspect(err))
-      vim.notify("acp: initialize failed: " .. vim.inspect(err), vim.log.levels.ERROR)
-      self:_on_state("error")
-      return
-    end
-    self.protocol_version = result.protocolVersion or self.protocol_version
-    self.agent_info = result.agentInfo
-    self.agent_capabilities = result.agentCapabilities
-    self.state = "ready"
-    local listeners = self.ready_listeners
-    self.ready_listeners = {}
-    for _, listener in ipairs(listeners) do
-      pcall(listener, self)
-    end
-  end)
+	local max = config.current.initialize_retries or 3
+	self:request("initialize", {
+		protocolVersion = self.protocol_version,
+		clientInfo = { name = "0x0.nvim", version = "4.1.1" },
+		clientCapabilities = {
+			fs = {
+				readTextFile = self.host_fs,
+				writeTextFile = self.host_fs,
+			},
+			terminal = false,
+		},
+	}, function(result, err)
+		if err or not result then
+			if attempt + 1 < max then
+				local delay = INITIALIZE_BACKOFF_MS[attempt + 1] or 1000
+				log.warn(
+					("acp: initialize failed (attempt %d/%d), retrying in %d ms: %s"):format(
+						attempt + 1,
+						max,
+						delay,
+						vim.inspect(err)
+					)
+				)
+				vim.defer_fn(function()
+					if self.state ~= "initializing" then
+						return
+					end
+					self:_initialize_with_retry(attempt + 1)
+				end, delay)
+				return
+			end
+			log.error("acp: initialize failed after retries: " .. vim.inspect(err))
+			vim.notify("acp: initialize failed: " .. vim.inspect(err), vim.log.levels.ERROR)
+			self:_on_state("error")
+			return
+		end
+		self.protocol_version = result.protocolVersion or self.protocol_version
+		self.agent_info = result.agentInfo
+		self.agent_capabilities = result.agentCapabilities
+		self.state = "ready"
+		local listeners = self.ready_listeners
+		self.ready_listeners = {}
+		for _, listener in ipairs(listeners) do
+			pcall(listener, self)
+		end
+	end)
 end
 
 ---@param session_id string
 ---@param handlers { on_update: fun(update: table), on_request_permission?: fun(request: table, respond: fun(option_id: string)) }
 function Client:subscribe(session_id, handlers)
-  self.subscribers[session_id] = handlers
+	self.subscribers[session_id] = handlers
 end
 
 ---@param session_id string
 function Client:unsubscribe(session_id)
-  self.subscribers[session_id] = nil
+	self.subscribers[session_id] = nil
 end
 
 ---@param cwd string
 ---@param callback fun(result: table|nil, err: table|nil)
 function Client:new_session(cwd, callback)
-  return self:request("session/new", { cwd = cwd, mcpServers = {} }, callback)
+	return self:request("session/new", { cwd = cwd, mcpServers = {} }, callback)
 end
 
 ---@param session_id string
@@ -420,46 +427,46 @@ end
 ---@param callback fun(result: table|nil, err: table|nil)
 ---@param opts? { timeout_ms?: integer }
 function Client:prompt(session_id, prompt_blocks, callback, opts)
-  return self:request("session/prompt", { sessionId = session_id, prompt = prompt_blocks }, callback, opts)
+	return self:request("session/prompt", { sessionId = session_id, prompt = prompt_blocks }, callback, opts)
 end
 
 ---@param session_id string
 function Client:cancel(session_id)
-  if not session_id then
-    return
-  end
-  self:notify("session/cancel", { sessionId = session_id })
+	if not session_id then
+		return
+	end
+	self:notify("session/cancel", { sessionId = session_id })
 end
 
 function Client:supports_session_close()
-  local capabilities = self.agent_capabilities or {}
-  local session_capabilities = capabilities.sessionCapabilities or {}
-  return session_capabilities.close ~= nil
+	local capabilities = self.agent_capabilities or {}
+	local session_capabilities = capabilities.sessionCapabilities or {}
+	return session_capabilities.close ~= nil
 end
 
 ---@param session_id string
 ---@param callback? fun(result: table|nil, err: table|nil)
 function Client:close_session(session_id, callback)
-  if not session_id then
-    return
-  end
-  if not self:supports_session_close() then
-    log.debug("acp: skipping session/close; provider did not advertise sessionCapabilities.close")
-    if callback then
-      vim.schedule(function()
-        callback(nil, nil)
-      end)
-    end
-    return
-  end
-  return self:request("session/close", { sessionId = session_id }, function(result, err)
-    if err then
-      log.warn("acp: session/close failed: " .. vim.inspect(err))
-    end
-    if callback then
-      callback(result, err)
-    end
-  end)
+	if not session_id then
+		return
+	end
+	if not self:supports_session_close() then
+		log.debug("acp: skipping session/close; provider did not advertise sessionCapabilities.close")
+		if callback then
+			vim.schedule(function()
+				callback(nil, nil)
+			end)
+		end
+		return
+	end
+	return self:request("session/close", { sessionId = session_id }, function(result, err)
+		if err then
+			log.warn("acp: session/close failed: " .. vim.inspect(err))
+		end
+		if callback then
+			callback(result, err)
+		end
+	end)
 end
 
 ---@param session_id string
@@ -467,24 +474,24 @@ end
 ---@param value string|nil
 ---@param callback fun(result: table|nil, err: table|nil)
 function Client:set_config_option(session_id, config_id, value, callback)
-  if not session_id or not config_id or config_id == "" or not value or value == "" then
-    callback(nil, nil)
-    return
-  end
-  return self:request(
-    "session/set_config_option",
-    { sessionId = session_id, configId = config_id, value = value },
-    callback
-  )
+	if not session_id or not config_id or config_id == "" or not value or value == "" then
+		callback(nil, nil)
+		return
+	end
+	return self:request(
+		"session/set_config_option",
+		{ sessionId = session_id, configId = config_id, value = value },
+		callback
+	)
 end
 
 function Client:is_ready()
-  return self.state == "ready"
+	return self.state == "ready"
 end
 
 function Client:stop()
-  self.subscribers = {}
-  self.transport:stop()
+	self.subscribers = {}
+	self.transport:stop()
 end
 
 -- ---------------------------------------------------------------------------
@@ -499,185 +506,189 @@ local _client_factory = nil
 
 ---@param fn fun(provider: table, opts?: table): table|nil
 function M._set_client_factory(fn)
-  _client_factory = fn
+	_client_factory = fn
 end
 
 function M._reset_client_factory()
-  _client_factory = nil
+	_client_factory = nil
 end
 
 local function _create_client(provider, opts)
-  if _client_factory then
-    return _client_factory(provider, opts)
-  end
-  return M.new(provider, opts)
+	if _client_factory then
+		return _client_factory(provider, opts)
+	end
+	return M.new(provider, opts)
 end
 
 local function _completion_key(provider)
-  return tostring(provider.command) .. "\0" .. table.concat(provider.args or {}, "\1")
+	return tostring(provider.command) .. "\0" .. table.concat(provider.args or {}, "\1")
 end
 
 local function _flush_completion_waiters(entry, client, err)
-  local waiters = entry.ready_waiters
-  entry.ready_waiters = {}
-  for _, fn in ipairs(waiters) do
-    vim.schedule(function()
-      fn(client, err)
-    end)
-  end
+	local waiters = entry.ready_waiters
+	entry.ready_waiters = {}
+	for _, fn in ipairs(waiters) do
+		vim.schedule(function()
+			fn(client, err)
+		end)
+	end
 end
 
 local function _get_completion_client(provider, on_ready)
-  local key = _completion_key(provider)
-  local entry = _completion_clients[key]
-  if entry and entry.client and entry.client.state ~= "disconnected" and entry.client.state ~= "error" then
-    if entry.authenticated and entry.client:is_ready() then
-      vim.schedule(function()
-        on_ready(entry.client, nil)
-      end)
-    else
-      entry.ready_waiters[#entry.ready_waiters + 1] = on_ready
-    end
-    return entry.client
-  end
+	local key = _completion_key(provider)
+	local entry = _completion_clients[key]
+	if entry and entry.client and entry.client.state ~= "disconnected" and entry.client.state ~= "error" then
+		if entry.authenticated and entry.client:is_ready() then
+			vim.schedule(function()
+				on_ready(entry.client, nil)
+			end)
+		else
+			entry.ready_waiters[#entry.ready_waiters + 1] = on_ready
+		end
+		return entry.client
+	end
 
-  local client = _create_client(provider, { host_fs = false })
-  entry = {
-    client = client,
-    ready_waiters = { on_ready },
-    authenticated = false,
-  }
-  _completion_clients[key] = entry
+	local client = _create_client(provider, { host_fs = false })
+	entry = {
+		client = client,
+		ready_waiters = { on_ready },
+		authenticated = false,
+	}
+	_completion_clients[key] = entry
 
-  client:start(function(c)
-    if not c then
-      _completion_clients[key] = nil
-      _flush_completion_waiters(entry, nil, { message = "completion client unavailable" })
-      return
-    end
-    if provider.auth_method and provider.auth_method ~= "" then
-      c:request("authenticate", { methodId = provider.auth_method }, function(_, err)
-        if err then
-          log.error("acp[completion]: authenticate failed: " .. vim.inspect(err))
-          _completion_clients[key] = nil
-          _flush_completion_waiters(entry, nil, err)
-          return
-        end
-        entry.authenticated = true
-        _flush_completion_waiters(entry, c, nil)
-      end)
-    else
-      entry.authenticated = true
-      _flush_completion_waiters(entry, c, nil)
-    end
-  end)
-  return client
+	client:start(function(c)
+		if not c then
+			_completion_clients[key] = nil
+			_flush_completion_waiters(entry, nil, { message = "completion client unavailable" })
+			return
+		end
+		if provider.auth_method and provider.auth_method ~= "" then
+			c:request("authenticate", { methodId = provider.auth_method }, function(_, err)
+				if err then
+					log.error("acp[completion]: authenticate failed: " .. vim.inspect(err))
+					_completion_clients[key] = nil
+					_flush_completion_waiters(entry, nil, err)
+					return
+				end
+				entry.authenticated = true
+				_flush_completion_waiters(entry, c, nil)
+			end)
+		else
+			entry.authenticated = true
+			_flush_completion_waiters(entry, c, nil)
+		end
+	end)
+	return client
 end
 
 local COMPLETION_SAFE_TOOL_KINDS = {
-  read = true,
-  search = true,
-  list = true,
-  inspect = true,
+	read = true,
+	search = true,
+	list = true,
+	inspect = true,
 }
 
 local function _choose_completion_permission(params)
-  params = params or {}
-  local tool_call = params and params.toolCall or {}
-  local kind = tostring(tool_call.kind or params.kind or ""):lower()
-  if not COMPLETION_SAFE_TOOL_KINDS[kind] then
-    return nil
-  end
-  for _, kind in ipairs({ "allow_once", "allow_always" }) do
-    for _, opt in ipairs(params.options or {}) do
-      if opt.kind == kind then
-        return opt.optionId
-      end
-    end
-  end
+	params = params or {}
+	local tool_call = params and params.toolCall or {}
+	local kind = tostring(tool_call.kind or params.kind or ""):lower()
+	if not COMPLETION_SAFE_TOOL_KINDS[kind] then
+		return nil
+	end
+	for _, kind in ipairs({ "allow_once", "allow_always" }) do
+		for _, opt in ipairs(params.options or {}) do
+			if opt.kind == kind then
+				return opt.optionId
+			end
+		end
+	end
 end
 
 local function _model_config_option(config_options)
-  for _, option in ipairs(config_options or {}) do
-    if type(option) == "table" and option.type == "select" and (option.category == "model" or option.id == "model") then
-      return option
-    end
-  end
+	for _, option in ipairs(config_options or {}) do
+		if
+			type(option) == "table"
+			and option.type == "select"
+			and (option.category == "model" or option.id == "model")
+		then
+			return option
+		end
+	end
 
-  for _, option in ipairs(config_options or {}) do
-    if type(option) == "table" and option.type == "select" and tostring(option.name or ""):lower() == "model" then
-      return option
-    end
-  end
+	for _, option in ipairs(config_options or {}) do
+		if type(option) == "table" and option.type == "select" and tostring(option.name or ""):lower() == "model" then
+			return option
+		end
+	end
 end
 
 local function _model_config_value(option, requested_model)
-  if type(option) ~= "table" or type(requested_model) ~= "string" or requested_model == "" then
-    return nil
-  end
+	if type(option) ~= "table" or type(requested_model) ~= "string" or requested_model == "" then
+		return nil
+	end
 
-  local requested_lower = requested_model:lower()
-  local requested_fast_base = requested_lower:match("^(.*)%-fast$")
-  for _, candidate in ipairs(option.options or {}) do
-    if type(candidate) == "table" then
-      local value = candidate.value
-      local name = candidate.name
-      if value == requested_model or name == requested_model then
-        return value
-      end
-      if type(value) == "string" and value:lower() == requested_lower then
-        return value
-      end
-      if type(name) == "string" and name:lower() == requested_lower then
-        return value
-      end
-      if requested_fast_base and type(value) == "string" and value ~= "" then
-        local value_lower = value:lower()
-        local value_base = value_lower:match("^(.-)%[") or value_lower
-        if value_base == requested_fast_base and value_lower:find("fast%s*=%s*true") then
-          return value
-        end
-      end
-    end
-  end
+	local requested_lower = requested_model:lower()
+	local requested_fast_base = requested_lower:match("^(.*)%-fast$")
+	for _, candidate in ipairs(option.options or {}) do
+		if type(candidate) == "table" then
+			local value = candidate.value
+			local name = candidate.name
+			if value == requested_model or name == requested_model then
+				return value
+			end
+			if type(value) == "string" and value:lower() == requested_lower then
+				return value
+			end
+			if type(name) == "string" and name:lower() == requested_lower then
+				return value
+			end
+			if requested_fast_base and type(value) == "string" and value ~= "" then
+				local value_lower = value:lower()
+				local value_base = value_lower:match("^(.-)%[") or value_lower
+				if value_base == requested_fast_base and value_lower:find("fast%s*=%s*true") then
+					return value
+				end
+			end
+		end
+	end
 end
 
 local function _model_config_values(option)
-  local values = {}
-  for _, candidate in ipairs(type(option) == "table" and option.options or {}) do
-    if type(candidate) == "table" and type(candidate.value) == "string" and candidate.value ~= "" then
-      values[#values + 1] = candidate.value
-    end
-  end
-  return values
+	local values = {}
+	for _, candidate in ipairs(type(option) == "table" and option.options or {}) do
+		if type(candidate) == "table" and type(candidate.value) == "string" and candidate.value ~= "" then
+			values[#values + 1] = candidate.value
+		end
+	end
+	return values
 end
 
 local function _completion_prompt(request)
-  return table.concat({
-    "You are an inline code completion engine.",
-    "Predict the short fragment the user is most likely to type next at the cursor,",
-    "inferring intent from the surrounding code in <prefix> and <suffix>.",
-    "",
-    "Rules:",
-    "- Return ONLY the raw text to insert at the cursor. No prose, no explanations.",
-    "- Do not include thinking, preambles, or text like 'Let me think about this'.",
-    "- No markdown fences, no language tags, no comments about the code.",
-    "- Do not repeat any text from <prefix> or <suffix>.",
-    "- Prefer a single line. Stop at the end of the current phrase, expression,",
-    "  statement, or call — whichever ends first. Output the shortest useful completion.",
-    "- If the cursor is mid-identifier, complete that identifier only.",
-    "- If nothing useful can be added, return an empty string.",
-    "",
-    "File: " .. tostring(request.filepath or ""),
-    "Language: " .. tostring(request.language or ""),
-    "",
-    "<prefix>",
-    request.prefix or "",
-    "</prefix>",
-    "<suffix>",
-    request.suffix or "",
-    "</suffix>",
-  }, "\n")
+	return table.concat({
+		"You are an inline code completion engine.",
+		"Predict the short fragment the user is most likely to type next at the cursor,",
+		"inferring intent from the surrounding code in <prefix> and <suffix>.",
+		"",
+		"Rules:",
+		"- Return ONLY the raw text to insert at the cursor. No prose, no explanations.",
+		"- Do not include thinking, preambles, or text like 'Let me think about this'.",
+		"- No markdown fences, no language tags, no comments about the code.",
+		"- Do not repeat any text from <prefix> or <suffix>.",
+		"- Prefer a single line. Stop at the end of the current phrase, expression,",
+		"  statement, or call — whichever ends first. Output the shortest useful completion.",
+		"- If the cursor is mid-identifier, complete that identifier only.",
+		"- If nothing useful can be added, return an empty string.",
+		"",
+		"File: " .. tostring(request.filepath or ""),
+		"Language: " .. tostring(request.language or ""),
+		"",
+		"<prefix>",
+		request.prefix or "",
+		"</prefix>",
+		"<suffix>",
+		request.suffix or "",
+		"</suffix>",
+	}, "\n")
 end
 
 ---Stream an inline completion. Completion sessions are read-only: they do not
@@ -688,190 +699,193 @@ end
 ---@param on_done fun(err?: any)
 ---@return fun() abort
 function M.stream_completion(provider, request, on_chunk, on_done)
-  local active = true
-  local done = false
-  local session_id = nil
-  local client_ref = nil
-  local session_closed = false
-  local pending_requests = {}
-  local complete_cfg = config.current.complete or {}
-  local prompt_timeout_ms = complete_cfg.prompt_timeout_ms
+	local active = true
+	local done = false
+	local session_id = nil
+	local client_ref = nil
+	local session_closed = false
+	local pending_requests = {}
+	local complete_cfg = config.current.complete or {}
+	local prompt_timeout_ms = complete_cfg.prompt_timeout_ms
 
-  local function track_request(id)
-    if id then
-      pending_requests[id] = true
-    end
-    return id
-  end
+	local function track_request(id)
+		if id then
+			pending_requests[id] = true
+		end
+		return id
+	end
 
-  local function untrack_request(id)
-    pending_requests[id] = nil
-  end
+	local function untrack_request(id)
+		pending_requests[id] = nil
+	end
 
-  local function forget_pending_requests()
-    if client_ref then
-      for id in pairs(pending_requests) do
-        client_ref:forget_request(id)
-      end
-    end
-    pending_requests = {}
-  end
+	local function forget_pending_requests()
+		if client_ref then
+			for id in pairs(pending_requests) do
+				client_ref:forget_request(id)
+			end
+		end
+		pending_requests = {}
+	end
 
-  local function close_session()
-    if session_closed or not session_id or not client_ref then
-      return
-    end
-    session_closed = true
-    client_ref:close_session(session_id)
-  end
+	local function close_session()
+		if session_closed or not session_id or not client_ref then
+			return
+		end
+		session_closed = true
+		client_ref:close_session(session_id)
+	end
 
-  local function finish(err)
-    if done then
-      return
-    end
-    done = true
-    active = false
-    forget_pending_requests()
-    if session_id and client_ref then
-      client_ref:unsubscribe(session_id)
-      close_session()
-    end
-    vim.schedule(function()
-      on_done(err)
-    end)
-  end
+	local function finish(err)
+		if done then
+			return
+		end
+		done = true
+		active = false
+		forget_pending_requests()
+		if session_id and client_ref then
+			client_ref:unsubscribe(session_id)
+			close_session()
+		end
+		vim.schedule(function()
+			on_done(err)
+		end)
+	end
 
-  _get_completion_client(provider, function(client, ready_err)
-    if not active then
-      return
-    end
-    if ready_err or not client then
-      finish(ready_err or { message = "completion client unavailable" })
-      return
-    end
-    client_ref = client
-    local new_session_request_id
-    new_session_request_id = track_request(client:new_session(request.cwd or vim.fn.getcwd(), function(result, err)
-      untrack_request(new_session_request_id)
-      if not active then
-        return
-      end
-      if err or not result or not result.sessionId then
-        finish(err or "session/new returned no sessionId")
-        return
-      end
-      session_id = result.sessionId
+	_get_completion_client(provider, function(client, ready_err)
+		if not active then
+			return
+		end
+		if ready_err or not client then
+			finish(ready_err or { message = "completion client unavailable" })
+			return
+		end
+		client_ref = client
+		local new_session_request_id
+		new_session_request_id = track_request(client:new_session(request.cwd or vim.fn.getcwd(), function(result, err)
+			untrack_request(new_session_request_id)
+			if not active then
+				return
+			end
+			if err or not result or not result.sessionId then
+				finish(err or "session/new returned no sessionId")
+				return
+			end
+			session_id = result.sessionId
 
-      client:subscribe(session_id, {
-        on_update = function(update)
-          if not active then
-            return
-          end
-          if update.sessionUpdate ~= "agent_message_chunk" then
-            return
-          end
-          local content = update.content
-          if type(content) == "table" and content.type == "text" and content.text then
-            vim.schedule(function()
-              if active then
-                on_chunk(content.text)
-              end
-            end)
-          end
-        end,
-        on_request_permission = function(params, respond)
-          local allow = nil
-          if config.current.complete and config.current.complete.allow_read_tools then
-            allow = _choose_completion_permission(params)
-          end
-          respond(allow or "")
-        end,
-      })
+			client:subscribe(session_id, {
+				on_update = function(update)
+					if not active then
+						return
+					end
+					if update.sessionUpdate ~= "agent_message_chunk" then
+						return
+					end
+					local content = update.content
+					if type(content) == "table" and content.type == "text" and content.text then
+						vim.schedule(function()
+							if active then
+								on_chunk(content.text)
+							end
+						end)
+					end
+				end,
+				on_request_permission = function(params, respond)
+					local allow = nil
+					if config.current.complete and config.current.complete.allow_read_tools then
+						allow = _choose_completion_permission(params)
+					end
+					respond(allow or "")
+				end,
+			})
 
-      local function send_prompt()
-        local prompt_request_id
-        local prompt_opts = nil
-        if prompt_timeout_ms ~= nil then
-          prompt_opts = { timeout_ms = prompt_timeout_ms }
-        end
-        prompt_request_id = track_request(client:prompt(session_id, {
-          { type = "text", text = _completion_prompt(request) },
-        }, function(_, prompt_err)
-          untrack_request(prompt_request_id)
-          finish(prompt_err)
-        end, prompt_opts))
-      end
+			local function send_prompt()
+				local prompt_request_id
+				local prompt_opts = nil
+				if prompt_timeout_ms ~= nil then
+					prompt_opts = { timeout_ms = prompt_timeout_ms }
+				end
+				prompt_request_id = track_request(client:prompt(session_id, {
+					{ type = "text", text = _completion_prompt(request) },
+				}, function(_, prompt_err)
+					untrack_request(prompt_request_id)
+					finish(prompt_err)
+				end, prompt_opts))
+			end
 
-      local function configure_model(callback)
-        if not request.model or request.model == "" then
-          callback(nil)
-          return
-        end
+			local function configure_model(callback)
+				if not request.model or request.model == "" then
+					callback(nil)
+					return
+				end
 
-        local model_option = _model_config_option(result.configOptions)
-        if not model_option then
-          log.debug("acp[completion]: no model config option advertised; using provider default")
-          callback(nil)
-          return
-        end
+				local model_option = _model_config_option(result.configOptions)
+				if not model_option then
+					log.debug("acp[completion]: no model config option advertised; using provider default")
+					callback(nil)
+					return
+				end
 
-        local model_value = _model_config_value(model_option, request.model)
-        if not model_value then
-          callback({
-            code = -32602,
-            message = "requested completion model is not advertised by provider: " .. tostring(request.model),
-            data = { availableModels = _model_config_values(model_option) },
-          })
-          return
-        end
+				local model_value = _model_config_value(model_option, request.model)
+				if not model_value then
+					callback({
+						code = -32602,
+						message = "requested completion model is not advertised by provider: "
+							.. tostring(request.model),
+						data = { availableModels = _model_config_values(model_option) },
+					})
+					return
+				end
 
-        if model_option.currentValue == model_value then
-          callback(nil)
-          return
-        end
+				if model_option.currentValue == model_value then
+					callback(nil)
+					return
+				end
 
-        local model_request_id
-        model_request_id = track_request(client:set_config_option(session_id, model_option.id, model_value, function(_, model_err)
-          untrack_request(model_request_id)
-          callback(model_err)
-        end))
-      end
+				local model_request_id
+				model_request_id = track_request(
+					client:set_config_option(session_id, model_option.id, model_value, function(_, model_err)
+						untrack_request(model_request_id)
+						callback(model_err)
+					end)
+				)
+			end
 
-      configure_model(function(model_err)
-        if model_err then
-          finish(model_err)
-          return
-        end
-        send_prompt()
-      end)
-    end))
-  end)
+			configure_model(function(model_err)
+				if model_err then
+					finish(model_err)
+					return
+				end
+				send_prompt()
+			end)
+		end))
+	end)
 
-  return function()
-    if done or not active then
-      return
-    end
-    done = true
-    active = false
-    if session_id and client_ref then
-      client_ref:cancel(session_id)
-      client_ref:unsubscribe(session_id)
-      close_session()
-    end
-    forget_pending_requests()
-  end
+	return function()
+		if done or not active then
+			return
+		end
+		done = true
+		active = false
+		if session_id and client_ref then
+			client_ref:cancel(session_id)
+			client_ref:unsubscribe(session_id)
+			close_session()
+		end
+		forget_pending_requests()
+	end
 end
 
 ---Stop all singleton completion provider subprocesses.
 function M.stop_all_completion_clients()
-  for key, entry in pairs(_completion_clients) do
-    if entry.client then
-      pcall(function()
-        entry.client:stop()
-      end)
-    end
-    _completion_clients[key] = nil
-  end
+	for key, entry in pairs(_completion_clients) do
+		if entry.client then
+			pcall(function()
+				entry.client:stop()
+			end)
+		end
+		_completion_clients[key] = nil
+	end
 end
 
 return M

@@ -8,17 +8,17 @@ local plenary_path = cache_dir .. "/plenary.nvim"
 local swap_dir = cache_dir .. "/swap"
 
 if vim.fn.isdirectory(plenary_path) == 0 then
-  vim.fn.mkdir(cache_dir, "p")
-  local out = vim.fn.system({
-    "git",
-    "clone",
-    "--depth=1",
-    "https://github.com/nvim-lua/plenary.nvim",
-    plenary_path,
-  })
-  if vim.v.shell_error ~= 0 then
-    error("failed to clone plenary.nvim: " .. tostring(out))
-  end
+	vim.fn.mkdir(cache_dir, "p")
+	local out = vim.fn.system({
+		"git",
+		"clone",
+		"--depth=1",
+		"https://github.com/nvim-lua/plenary.nvim",
+		plenary_path,
+	})
+	if vim.v.shell_error ~= 0 then
+		error("failed to clone plenary.nvim: " .. tostring(out))
+	end
 end
 
 vim.opt.runtimepath:prepend(plenary_path)
@@ -29,9 +29,9 @@ vim.opt.directory = swap_dir .. "//"
 vim.opt.swapfile = false
 vim.opt.updatecount = 0
 vim.api.nvim_create_autocmd({ "BufNewFile", "BufReadPre" }, {
-  callback = function()
-    vim.opt_local.swapfile = false
-  end,
+	callback = function()
+		vim.opt_local.swapfile = false
+	end,
 })
 
 vim.cmd("runtime plugin/plenary.vim")

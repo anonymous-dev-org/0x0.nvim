@@ -16,18 +16,18 @@ local ns = vim.api.nvim_create_namespace("zxz_complete")
 local _state = nil
 
 local function cursor_at_line_end(line, col)
-  if vim.str_byteindex then
-    local ok, byte_idx = pcall(vim.str_byteindex, line, col, false)
-    if ok and byte_idx then
-      return byte_idx >= #line
-    end
-  end
-  return col >= #line
+	if vim.str_byteindex then
+		local ok, byte_idx = pcall(vim.str_byteindex, line, col, false)
+		if ok and byte_idx then
+			return byte_idx >= #line
+		end
+	end
+	return col >= #line
 end
 
 --- Set up highlight groups.
 local function setup_highlights()
-  vim.api.nvim_set_hl(0, "ZxzCompleteGhost", { link = "Comment", default = true })
+	vim.api.nvim_set_hl(0, "ZxzCompleteGhost", { link = "Comment", default = true })
 end
 
 --- Strip control characters and unwrap markdown code fences. The provider
@@ -36,9 +36,9 @@ end
 ---@param text string
 ---@return string
 local function sanitize(text)
-  text = text:gsub("^%s*```[%w_-]*\n?", ""):gsub("\n?```%s*$", "")
-  text = text:gsub("[%z\1-\8\11\12\14-\31\127]", "")
-  return text
+	text = text:gsub("^%s*```[%w_-]*\n?", ""):gsub("\n?```%s*$", "")
+	text = text:gsub("[%z\1-\8\11\12\14-\31\127]", "")
+	return text
 end
 
 --- Show ghost text at the current cursor position.
@@ -47,112 +47,112 @@ end
 ---@param col integer 0-based
 ---@param text string The completion text to display
 function M.show(bufnr, row, col, text)
-  text = sanitize(text)
-  if text == "" then
-    return
-  end
-  local line = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1] or ""
-  if not cursor_at_line_end(line, col) then
-    M.clear()
-    return
-  end
+	text = sanitize(text)
+	if text == "" then
+		return
+	end
+	local line = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1] or ""
+	if not cursor_at_line_end(line, col) then
+		M.clear()
+		return
+	end
 
-  setup_highlights()
-  M.clear()
+	setup_highlights()
+	M.clear()
 
-  local lines = vim.split(text, "\n", { plain = true })
-  local first_line = lines[1] or ""
-  if first_line == "" then
-    return
-  end
+	local lines = vim.split(text, "\n", { plain = true })
+	local first_line = lines[1] or ""
+	if first_line == "" then
+		return
+	end
 
-  _state = {
-    bufnr = bufnr,
-    row = row,
-    col = col,
-    text = text,
-    extmark_ids = {},
-  }
+	_state = {
+		bufnr = bufnr,
+		row = row,
+		col = col,
+		text = text,
+		extmark_ids = {},
+	}
 
-  local ok, id = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, row, col, {
-    virt_text = { { first_line, "ZxzCompleteGhost" } },
-    virt_text_pos = "inline",
-    priority = 1000,
-  })
-  if ok then
-    table.insert(_state.extmark_ids, id)
-  end
+	local ok, id = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, row, col, {
+		virt_text = { { first_line, "ZxzCompleteGhost" } },
+		virt_text_pos = "inline",
+		priority = 1000,
+	})
+	if ok then
+		table.insert(_state.extmark_ids, id)
+	end
 
-  if #lines > 1 then
-    local virt_lines = {}
-    for i = 2, #lines do
-      virt_lines[#virt_lines + 1] = { { lines[i], "ZxzCompleteGhost" } }
-    end
+	if #lines > 1 then
+		local virt_lines = {}
+		for i = 2, #lines do
+			virt_lines[#virt_lines + 1] = { { lines[i], "ZxzCompleteGhost" } }
+		end
 
-    local lines_ok, lines_id = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, row, 0, {
-      virt_lines = virt_lines,
-      virt_lines_above = false,
-      priority = 999,
-    })
-    if lines_ok then
-      table.insert(_state.extmark_ids, lines_id)
-    end
-  end
+		local lines_ok, lines_id = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, row, 0, {
+			virt_lines = virt_lines,
+			virt_lines_above = false,
+			priority = 999,
+		})
+		if lines_ok then
+			table.insert(_state.extmark_ids, lines_id)
+		end
+	end
 end
 
 --- Update the ghost text with new content (for streaming updates).
 ---@param text string
 function M.update(text)
-  if not _state then
-    return
-  end
-  M.show(_state.bufnr, _state.row, _state.col, text)
+	if not _state then
+		return
+	end
+	M.show(_state.bufnr, _state.row, _state.col, text)
 end
 
 --- Clear all ghost text.
 function M.clear()
-  if _state then
-    vim.api.nvim_buf_clear_namespace(_state.bufnr, ns, 0, -1)
-    _state = nil
-  end
+	if _state then
+		vim.api.nvim_buf_clear_namespace(_state.bufnr, ns, 0, -1)
+		_state = nil
+	end
 end
 
 --- Accept the ghost text — insert it into the buffer.
 ---@return boolean true if text was accepted
 function M.accept()
-  if not _state then
-    return false
-  end
+	if not _state then
+		return false
+	end
 
-  local bufnr = _state.bufnr
-  local row = _state.row
-  local col = _state.col
-  local text = _state.text
+	local bufnr = _state.bufnr
+	local row = _state.row
+	local col = _state.col
+	local text = _state.text
 
-  M.clear()
+	M.clear()
 
-  local lines = vim.split(text, "\n", { plain = true })
-  vim.api.nvim_buf_set_text(bufnr, row, col, row, col, lines)
+	local lines = vim.split(text, "\n", { plain = true })
+	vim.api.nvim_buf_set_text(bufnr, row, col, row, col, lines)
 
-  if #lines == 1 then
-    vim.api.nvim_win_set_cursor(0, { row + 1, col + #text })
-  else
-    vim.api.nvim_win_set_cursor(0, { row + #lines, #lines[#lines] })
-  end
+	if #lines == 1 then
+		vim.api.nvim_win_set_cursor(0, { row + 1, col + #text })
+	else
+		vim.api.nvim_win_set_cursor(0, { row + #lines, #lines[#lines] })
+	end
 
-  return true
+	return true
 end
 
 --- Check if ghost text is currently visible.
 ---@return boolean
 function M.is_visible()
-  return _state ~= nil
+	return _state ~= nil
 end
 
 --- Get the current ghost text.
 ---@return string?
 function M.get_text()
-  return _state and _state.text
+	return _state and _state.text
 end
 
 return M

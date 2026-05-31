@@ -10,89 +10,89 @@ local MAX_BYTES = 5 * 1024 * 1024
 local LEVELS = { ERROR = 1, WARN = 2, INFO = 3, DEBUG = 4 }
 
 local function log_path()
-  local path = paths.log_path()
-  local dir = vim.fn.fnamemodify(path, ":h")
-  if vim.fn.isdirectory(dir) == 0 then
-    pcall(vim.fn.mkdir, dir, "p")
-  end
-  return path
+	local path = paths.log_path()
+	local dir = vim.fn.fnamemodify(path, ":h")
+	if vim.fn.isdirectory(dir) == 0 then
+		pcall(vim.fn.mkdir, dir, "p")
+	end
+	return path
 end
 
 local function fs_stat(path)
-  local uv = vim.uv or vim.loop
-  if uv and uv.fs_stat then
-    return uv.fs_stat(path)
-  end
-  return nil
+	local uv = vim.uv or vim.loop
+	if uv and uv.fs_stat then
+		return uv.fs_stat(path)
+	end
+	return nil
 end
 
 local function rotate(path)
-  local stat = fs_stat(path)
-  if stat and stat.size > MAX_BYTES then
-    pcall(os.rename, path, path .. ".1")
-  end
+	local stat = fs_stat(path)
+	if stat and stat.size > MAX_BYTES then
+		pcall(os.rename, path, path .. ".1")
+	end
 end
 
 ---@param level "ERROR"|"WARN"|"INFO"|"DEBUG"
 ---@param msg string
 local function write(level, msg)
-  local path = log_path()
-  rotate(path)
-  local f = io.open(path, "a")
-  if not f then
-    return
-  end
-  local stamp = os.date("%Y-%m-%dT%H:%M:%S")
-  f:write(("%s [%s] %s\n"):format(stamp, level, msg))
-  f:close()
+	local path = log_path()
+	rotate(path)
+	local f = io.open(path, "a")
+	if not f then
+		return
+	end
+	local stamp = os.date("%Y-%m-%dT%H:%M:%S")
+	f:write(("%s [%s] %s\n"):format(stamp, level, msg))
+	f:close()
 end
 
 local function format_arg(a)
-  if type(a) == "string" then
-    return a
-  end
-  return vim.inspect(a)
+	if type(a) == "string" then
+		return a
+	end
+	return vim.inspect(a)
 end
 
 local function joined(...)
-  local n = select("#", ...)
-  local parts = {}
-  for i = 1, n do
-    parts[i] = format_arg(select(i, ...))
-  end
-  return table.concat(parts, " ")
+	local n = select("#", ...)
+	local parts = {}
+	for i = 1, n do
+		parts[i] = format_arg(select(i, ...))
+	end
+	return table.concat(parts, " ")
 end
 
 function M.error(...)
-  write("ERROR", joined(...))
+	write("ERROR", joined(...))
 end
 
 function M.warn(...)
-  write("WARN", joined(...))
+	write("WARN", joined(...))
 end
 
 function M.info(...)
-  write("INFO", joined(...))
+	write("INFO", joined(...))
 end
 
 function M.debug(...)
-  write("DEBUG", joined(...))
+	write("DEBUG", joined(...))
 end
 
 ---@return string path
 function M.path()
-  return log_path()
+	return log_path()
 end
 
 ---Open the log file in a split for inspection.
 function M.open()
-  local path = log_path()
-  if vim.fn.filereadable(path) == 0 then
-    vim.notify("0x0: log is empty (" .. path .. ")", vim.log.levels.INFO)
-    return
-  end
-  vim.cmd("tabnew " .. vim.fn.fnameescape(path))
-  vim.bo.filetype = "log"
+	local path = log_path()
+	if vim.fn.filereadable(path) == 0 then
+		vim.notify("0x0: log is empty (" .. path .. ")", vim.log.levels.INFO)
+		return
+	end
+	vim.cmd("tabnew " .. vim.fn.fnameescape(path))
+	vim.bo.filetype = "log"
 end
 
 return M
