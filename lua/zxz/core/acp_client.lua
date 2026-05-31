@@ -259,6 +259,10 @@ function Client:_on_message(message)
   end
 
   vim.schedule(function()
+    if message.error then
+      vim.notify("acp: provider error without request id: " .. vim.inspect(message.error), vim.log.levels.WARN)
+      return
+    end
     vim.notify("acp: unknown message shape: " .. vim.inspect(message), vim.log.levels.WARN)
   end)
 end
@@ -427,23 +431,35 @@ function Client:cancel(session_id)
   self:notify("session/cancel", { sessionId = session_id })
 end
 
----@param session_id string
-function Client:close_session(session_id)
-  if not session_id then
-    return
-  end
-  self:notify("session/close", { sessionId = session_id })
+function Client:supports_session_close()
+  local capabilities = self.agent_capabilities or {}
+  local session_capabilities = capabilities.sessionCapabilities or {}
+  return session_capabilities.close ~= nil
 end
 
 ---@param session_id string
----@param model_id string|nil
----@param callback fun(result: table|nil, err: table|nil)
-function Client:set_model(session_id, model_id, callback)
-  if not session_id or not model_id or model_id == "" then
-    callback(nil, nil)
+---@param callback? fun(result: table|nil, err: table|nil)
+function Client:close_session(session_id, callback)
+  if not session_id then
     return
   end
-  return self:request("session/set_model", { sessionId = session_id, modelId = model_id }, callback)
+  if not self:supports_session_close() then
+    log.debug("acp: skipping session/close; provider did not advertise sessionCapabilities.close")
+    if callback then
+      vim.schedule(function()
+        callback(nil, nil)
+      end)
+    end
+    return
+  end
+  return self:request("session/close", { sessionId = session_id }, function(result, err)
+    if err then
+      log.warn("acp: session/close failed: " .. vim.inspect(err))
+    end
+    if callback then
+      callback(result, err)
+    end
+  end)
 end
 
 ---@param session_id string
@@ -579,6 +595,53 @@ local function _choose_completion_permission(params)
       end
     end
   end
+end
+
+local function _model_config_option(config_options)
+  for _, option in ipairs(config_options or {}) do
+    if type(option) == "table" and option.type == "select" and (option.category == "model" or option.id == "model") then
+      return option
+    end
+  end
+
+  for _, option in ipairs(config_options or {}) do
+    if type(option) == "table" and option.type == "select" and tostring(option.name or ""):lower() == "model" then
+      return option
+    end
+  end
+end
+
+local function _model_config_value(option, requested_model)
+  if type(option) ~= "table" or type(requested_model) ~= "string" or requested_model == "" then
+    return nil
+  end
+
+  local requested_lower = requested_model:lower()
+  for _, candidate in ipairs(option.options or {}) do
+    if type(candidate) == "table" then
+      local value = candidate.value
+      local name = candidate.name
+      if value == requested_model or name == requested_model then
+        return value
+      end
+      if type(value) == "string" and value:lower() == requested_lower then
+        return value
+      end
+      if type(name) == "string" and name:lower() == requested_lower then
+        return value
+      end
+    end
+  end
+end
+
+local function _model_config_values(option)
+  local values = {}
+  for _, candidate in ipairs(type(option) == "table" and option.options or {}) do
+    if type(candidate) == "table" and type(candidate.value) == "string" and candidate.value ~= "" then
+      values[#values + 1] = candidate.value
+    end
+  end
+  return values
 end
 
 local function _completion_prompt(request)
@@ -731,19 +794,48 @@ function M.stream_completion(provider, request, on_chunk, on_done)
         end, prompt_opts))
       end
 
-      if request.model and request.model ~= "" then
+      local function configure_model(callback)
+        if not request.model or request.model == "" then
+          callback(nil)
+          return
+        end
+
+        local model_option = _model_config_option(result.configOptions)
+        if not model_option then
+          log.debug("acp[completion]: no model config option advertised; using provider default")
+          callback(nil)
+          return
+        end
+
+        local model_value = _model_config_value(model_option, request.model)
+        if not model_value then
+          callback({
+            code = -32602,
+            message = "requested completion model is not advertised by provider: " .. tostring(request.model),
+            data = { availableModels = _model_config_values(model_option) },
+          })
+          return
+        end
+
+        if model_option.currentValue == model_value then
+          callback(nil)
+          return
+        end
+
         local model_request_id
-        model_request_id = track_request(client:set_model(session_id, request.model, function(_, model_err)
+        model_request_id = track_request(client:set_config_option(session_id, model_option.id, model_value, function(_, model_err)
           untrack_request(model_request_id)
-          if model_err then
-            finish(model_err)
-            return
-          end
-          send_prompt()
+          callback(model_err)
         end))
-      else
-        send_prompt()
       end
+
+      configure_model(function(model_err)
+        if model_err then
+          finish(model_err)
+          return
+        end
+        send_prompt()
+      end)
     end))
   end)
 

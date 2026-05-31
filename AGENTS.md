@@ -36,12 +36,21 @@ focused on inline completion only.
 - **One short-lived ACP session per completion request** (`session/new` →
   `session/prompt` → teardown). **Why:** ACP sessions accumulate prompt history;
   reusing a session would pollute later completions.
-- **Every session must be closed on finish or abort** (`session/cancel` then
-  `session/close`). **Why:** the provider session map grows without explicit
-  close; orphaned sessions leak memory.
+- **Close sessions only when the agent advertises
+  `agentCapabilities.sessionCapabilities.close`**. On normal finish, send
+  `session/close` as a request only when supported; on abort, always send
+  `session/cancel` and additionally request `session/close` only when supported.
+  **Why:** ACP requires clients not to call unsupported close methods; providers
+  that lack it return Method-not-found errors, while providers that support it
+  need explicit close to free session resources.
 - **Do not enable host fs for completion sessions** (`host_fs = false`).
   Context is inlined in the prompt. **Why:** tool loops add latency and fail when
   fs handlers are absent.
+- **Model selection must use session `configOptions` when the agent advertises a
+  model selector** (`category = "model"` or `id = "model"`). Send the option
+  `value` via `session/set_config_option`; the option `name` is display text.
+  **Why:** current ACP exposes model choices as session config, not
+  `session/set_model`; confusing names with values sends unsupported model ids.
 - **Tool permission requests during completion are cancelled by default.**
   **Why:** inline completion must not trigger agent tool use.
 
@@ -93,6 +102,7 @@ Currently pinned regression tests:
 | Nofile buffer gate | `complete_spec.lua::"does not request completions for nofile buffers"` |
 | Model routing + prefix strip | `complete_spec.lua::"uses the resolved provider and drops repeated prefix text"` |
 | Cursor ACP model routing | `complete_spec.lua::"routes the selected model to its ACP provider"` |
+| ACP model config value | `acp_completion_spec.lua::"sets the advertised model config option by value before prompting"` |
 | Thinking model filtering | `complete_spec.lua::"filters thinking models from completion choices"` |
 | Thinking preamble suppression | `complete_spec.lua::"does not render thinking preambles as ghost text"` |
 | Thinking model fallback | `complete_spec.lua::"falls back from thinking model names before routing"` |
@@ -105,5 +115,5 @@ Currently pinned regression tests:
 | Cache prefix-shift | `cache_spec.lua::"shifts a cached completion when the typed character matches"` |
 | Bounded context reads | `context_spec.lua::"reads bounded prefix lines on large buffers"` |
 | Unsaved buffer filepath | `context_spec.lua::"uses an untitled filepath for unnamed buffers"` |
-| ACP session close on finish | `acp_completion_spec.lua::"finish closes the session after a successful prompt"` |
+| ACP close capability gate | `acp_completion_spec.lua::"close_session skips agents that do not advertise close support"` |
 | Debug log levels | `log_spec.lua::"appends timestamped lines at each level"` |

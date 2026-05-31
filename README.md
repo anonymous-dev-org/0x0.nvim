@@ -49,7 +49,9 @@ yourself.
 - **`complete.*`** — completion settings (model, debounce, cache, keymaps,
   timeouts). See `lua/zxz/core/config.lua` for defaults.
 - **`complete.model`** — user-facing model name. Provider routing is derived
-  internally.
+  internally. When an ACP provider advertises a model config option for the
+  session, 0x0 matches this value against the provider's option `value` or
+  display `name`, then sends the option `value` with `session/set_config_option`.
 - **`complete.models`** — model names shown by `:ZxzCompleteSettings`.
 
 Thinking/reasoning model variants are filtered out for completion, because
