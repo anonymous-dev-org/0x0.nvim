@@ -360,7 +360,7 @@ function Client:_initialize_with_retry(attempt)
 	local max = config.current.initialize_retries or 3
 	self:request("initialize", {
 		protocolVersion = self.protocol_version,
-		clientInfo = { name = "0x0.nvim", version = "4.1.1" },
+		clientInfo = { name = "0x0.nvim", version = "7.0.2" },
 		clientCapabilities = {
 			fs = {
 				readTextFile = self.host_fs,
