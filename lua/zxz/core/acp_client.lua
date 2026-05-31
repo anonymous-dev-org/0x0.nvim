@@ -3,12 +3,173 @@ local config = require("zxz.core.config")
 local log = require("zxz.core.log")
 
 local M = {}
+local uv = vim.uv or vim.loop
 
 -- Some requests are inherently long-running (a streaming model turn) and
 -- should not be timed out by the per-request watchdog.
 local NON_TIMED_METHODS = {
 	["session/prompt"] = true,
 }
+
+local function now_ms()
+	if uv and uv.hrtime then
+		return math.floor(uv.hrtime() / 1000000)
+	end
+	return math.floor(os.clock() * 1000)
+end
+
+local function elapsed_ms(start_ms)
+	if not start_ms then
+		return 0
+	end
+	return math.max(0, now_ms() - start_ms)
+end
+
+local function provider_label(provider)
+	if type(provider) ~= "table" then
+		return "unknown"
+	end
+	return tostring(provider.name or provider.command or "unknown")
+end
+
+local function command_summary(provider)
+	if type(provider) ~= "table" then
+		return "unknown"
+	end
+	local parts = { tostring(provider.command or "unknown") }
+	for _, arg in ipairs(provider.args or {}) do
+		parts[#parts + 1] = tostring(arg)
+	end
+	return table.concat(parts, " ")
+end
+
+local function display_key(key)
+	return tostring(key or ""):gsub("%z", "\\0"):gsub("\1", "\\1")
+end
+
+local function completion_debug_enabled()
+	local complete = config.current and config.current.complete or {}
+	return complete.debug == true
+end
+
+local function completion_debug(fmt, ...)
+	if not completion_debug_enabled() then
+		return
+	end
+	local msg = fmt
+	if select("#", ...) > 0 then
+		local ok, formatted = pcall(string.format, fmt, ...)
+		msg = ok and formatted or tostring(fmt)
+	end
+	log.debug("acp[completion]: " .. tostring(msg))
+end
+
+local function acp_debug(provider, fmt, ...)
+	if not completion_debug_enabled() then
+		return
+	end
+	local msg = fmt
+	if select("#", ...) > 0 then
+		local ok, formatted = pcall(string.format, fmt, ...)
+		msg = ok and formatted or tostring(fmt)
+	end
+	log.debug(("acp[%s]: %s"):format(provider_label(provider), tostring(msg)))
+end
+
+local function pending_summary(callbacks)
+	local items = {}
+	for id, entry in pairs(callbacks or {}) do
+		local method = type(entry) == "table" and entry.method or "request"
+		items[#items + 1] = ("%s#%s"):format(tostring(method or "?"), tostring(id))
+	end
+	table.sort(items)
+	if #items == 0 then
+		return "none"
+	end
+	return table.concat(items, ",")
+end
+
+local function err_summary(err)
+	if err == nil then
+		return "nil"
+	end
+	if type(err) == "table" then
+		return tostring(err.message or vim.inspect(err))
+	end
+	return tostring(err)
+end
+
+local function table_len(value)
+	if type(value) ~= "table" then
+		return 0
+	end
+	local count = 0
+	for _ in pairs(value) do
+		count = count + 1
+	end
+	return count
+end
+
+local function result_summary(method, result)
+	if type(result) ~= "table" then
+		return tostring(result)
+	end
+	if method == "initialize" then
+		local agent = result.agentInfo or {}
+		return ("protocol=%s agent=%s version=%s capability_groups=%d"):format(
+			tostring(result.protocolVersion or ""),
+			tostring(agent.name or ""),
+			tostring(agent.version or ""),
+			table_len(result.agentCapabilities)
+		)
+	end
+	if method == "session/new" then
+		return ("session=%s config_options=%d"):format(tostring(result.sessionId or ""), #(result.configOptions or {}))
+	end
+	if method == "session/prompt" then
+		return ("keys=%d"):format(table_len(result))
+	end
+	local keys = {}
+	for key in pairs(result) do
+		keys[#keys + 1] = tostring(key)
+	end
+	table.sort(keys)
+	if #keys > 6 then
+		keys[7] = "..."
+	end
+	return "keys=" .. table.concat(keys, ",")
+end
+
+local function notification_summary(message)
+	local params = message.params or {}
+	if message.method == "session/update" then
+		local update = params.update or {}
+		local content = update.content or {}
+		return ("method=session/update id=%s session=%s update=%s content_type=%s text_chars=%d"):format(
+			tostring(message.id or ""),
+			tostring(params.sessionId or ""),
+			tostring(update.sessionUpdate or ""),
+			tostring(content.type or ""),
+			#tostring(content.text or "")
+		)
+	end
+	if message.method == "session/request_permission" then
+		local tool_call = params.toolCall or {}
+		return ("method=session/request_permission id=%s session=%s tool=%s kind=%s options=%d"):format(
+			tostring(message.id or ""),
+			tostring(params.sessionId or ""),
+			tostring(tool_call.name or params.toolName or ""),
+			tostring(tool_call.kind or params.kind or ""),
+			#(params.options or {})
+		)
+	end
+	return ("method=%s id=%s session=%s keys=%d"):format(
+		tostring(message.method or ""),
+		tostring(message.id or ""),
+		tostring(params.sessionId or ""),
+		table_len(params)
+	)
+end
 
 local Client = {}
 Client.__index = Client
@@ -71,7 +232,15 @@ function M.new(provider, opts)
 end
 
 function Client:_on_state(state)
+	local previous = self.state
 	self.state = state
+	acp_debug(
+		self.provider,
+		"state %s -> %s pending=%s",
+		tostring(previous or ""),
+		tostring(state or ""),
+		pending_summary(self.callbacks)
+	)
 	if state == "disconnected" or state == "error" then
 		self:_fail_all_pending({ code = -32000, message = "transport " .. state })
 		local listeners = self.ready_listeners
@@ -90,6 +259,14 @@ end
 function Client:_fail_all_pending(err)
 	local pending = self.callbacks
 	self.callbacks = {}
+	if next(pending) then
+		acp_debug(
+			self.provider,
+			"failing pending requests pending=%s err=%s",
+			pending_summary(pending),
+			err_summary(err)
+		)
+	end
 	for id, entry in pairs(pending) do
 		if entry.timer then
 			pcall(function()
@@ -119,7 +296,7 @@ end
 function Client:request(method, params, callback, opts)
 	opts = opts or {}
 	local id = self:_next_id()
-	local entry = { cb = callback, method = method }
+	local entry = { cb = callback, method = method, start_ms = now_ms() }
 	self.callbacks[id] = entry
 
 	local timeout = opts.timeout_ms
@@ -129,6 +306,15 @@ function Client:request(method, params, callback, opts)
 			timeout = 0
 		end
 	end
+	entry.timeout_ms = timeout
+	acp_debug(
+		self.provider,
+		"request start method=%s id=%d timeout_ms=%s pending=%s",
+		tostring(method),
+		id,
+		tostring(timeout),
+		pending_summary(self.callbacks)
+	)
 	if timeout > 0 then
 		local timer = vim.uv.new_timer()
 		entry.timer = timer
@@ -140,6 +326,7 @@ function Client:request(method, params, callback, opts)
 				if not pending then
 					return
 				end
+				local pending_before = pending_summary(self.callbacks)
 				self.callbacks[id] = nil
 				if pending.timer then
 					pcall(function()
@@ -147,7 +334,15 @@ function Client:request(method, params, callback, opts)
 						pending.timer:close()
 					end)
 				end
-				log.warn(("acp: request '%s' (id=%d) timed out after %d ms"):format(method, id, timeout))
+				log.warn(
+					("acp[%s]: request '%s' (id=%d) timed out after %d ms pending=%s"):format(
+						provider_label(self.provider),
+						method,
+						id,
+						timeout,
+						pending_before
+					)
+				)
 				pcall(pending.cb, nil, {
 					code = -32001,
 					message = "request timed out",
@@ -167,7 +362,19 @@ function Client:request(method, params, callback, opts)
 		method = method,
 		params = params or vim.empty_dict(),
 	})
-	self.transport:send(data)
+	local sent = self.transport:send(data)
+	if sent then
+		acp_debug(self.provider, "request sent method=%s id=%d bytes=%d", tostring(method), id, #data)
+	else
+		log.warn(
+			("acp[%s]: failed to send request '%s' (id=%d); transport state=%s"):format(
+				provider_label(self.provider),
+				method,
+				id,
+				tostring(self.state)
+			)
+		)
+	end
 	return id
 end
 
@@ -181,6 +388,14 @@ function Client:forget_request(id)
 		return
 	end
 	self.callbacks[id] = nil
+	acp_debug(
+		self.provider,
+		"request forgotten method=%s id=%d elapsed_ms=%d pending=%s",
+		tostring(entry.method or ""),
+		id,
+		elapsed_ms(entry.start_ms),
+		pending_summary(self.callbacks)
+	)
 	if entry.timer then
 		pcall(function()
 			entry.timer:stop()
@@ -200,7 +415,18 @@ function Client:notify(method, params)
 		method = method,
 		params = params or vim.empty_dict(),
 	})
-	self.transport:send(data)
+	local sent = self.transport:send(data)
+	if sent then
+		acp_debug(self.provider, "notification sent method=%s bytes=%d", tostring(method), #data)
+	else
+		log.warn(
+			("acp[%s]: failed to send notification '%s'; transport state=%s"):format(
+				provider_label(self.provider),
+				method,
+				tostring(self.state)
+			)
+		)
+	end
 end
 
 ---@param id integer
@@ -211,7 +437,18 @@ function Client:respond(id, result)
 		id = id,
 		result = result or vim.empty_dict(),
 	})
-	self.transport:send(data)
+	local sent = self.transport:send(data)
+	if sent then
+		acp_debug(self.provider, "response sent id=%s bytes=%d", tostring(id), #data)
+	else
+		log.warn(
+			("acp[%s]: failed to send response id=%s; transport state=%s"):format(
+				provider_label(self.provider),
+				tostring(id),
+				tostring(self.state)
+			)
+		)
+	end
 end
 
 ---@param id integer
@@ -224,7 +461,25 @@ function Client:respond_error(id, code, message, data)
 		err.data = data
 	end
 	local payload = vim.json.encode({ jsonrpc = "2.0", id = id, error = err })
-	self.transport:send(payload)
+	local sent = self.transport:send(payload)
+	if sent then
+		acp_debug(
+			self.provider,
+			"response error sent id=%s code=%s message=%s bytes=%d",
+			tostring(id),
+			tostring(code),
+			tostring(message),
+			#payload
+		)
+	else
+		log.warn(
+			("acp[%s]: failed to send error response id=%s; transport state=%s"):format(
+				provider_label(self.provider),
+				tostring(id),
+				tostring(self.state)
+			)
+		)
+	end
 end
 
 ---@param method string
@@ -235,6 +490,7 @@ end
 
 function Client:_on_message(message)
 	if message.method and message.result == nil and message.error == nil then
+		acp_debug(self.provider, "notification recv %s", notification_summary(message))
 		local handler = self.notification_handlers[message.method]
 		if handler then
 			vim.schedule(function()
@@ -252,6 +508,25 @@ function Client:_on_message(message)
 		local entry = self.callbacks[message.id]
 		if entry then
 			self.callbacks[message.id] = nil
+			if message.error then
+				acp_debug(
+					self.provider,
+					"response error method=%s id=%s elapsed_ms=%d error=%s",
+					tostring(entry.method or ""),
+					tostring(message.id),
+					elapsed_ms(entry.start_ms),
+					err_summary(message.error)
+				)
+			else
+				acp_debug(
+					self.provider,
+					"response ok method=%s id=%s elapsed_ms=%d result=%s",
+					tostring(entry.method or ""),
+					tostring(message.id),
+					elapsed_ms(entry.start_ms),
+					result_summary(entry.method, message.result)
+				)
+			end
 			if entry.timer then
 				pcall(function()
 					entry.timer:stop()
@@ -264,6 +539,14 @@ function Client:_on_message(message)
 			vim.schedule(function()
 				entry.cb(message.result, message.error)
 			end)
+		else
+			acp_debug(
+				self.provider,
+				"response ignored id=%s has_error=%s pending=%s",
+				tostring(message.id),
+				tostring(message.error ~= nil),
+				pending_summary(self.callbacks)
+			)
 		end
 		return
 	end
@@ -282,6 +565,13 @@ function Client:start(on_ready)
 	if on_ready then
 		self.ready_listeners[#self.ready_listeners + 1] = on_ready
 	end
+	acp_debug(
+		self.provider,
+		"start command=%s host_fs=%s ready_waiters=%d",
+		command_summary(self.provider),
+		tostring(self.host_fs),
+		#self.ready_listeners
+	)
 
 	self:on_notification("session/update", function(params)
 		local sub = self.subscribers[params.sessionId]
@@ -293,6 +583,12 @@ function Client:start(on_ready)
 	self:on_notification("session/request_permission", function(params, message_id)
 		local sub = self.subscribers[params.sessionId]
 		if not sub or not sub.on_request_permission then
+			acp_debug(
+				self.provider,
+				"permission request auto-cancelled session=%s id=%s reason=no_handler",
+				tostring(params.sessionId or ""),
+				tostring(message_id or "")
+			)
 			self:respond(message_id, { outcome = { outcome = "cancelled" } })
 			return
 		end
@@ -301,12 +597,25 @@ function Client:start(on_ready)
 		end
 		sub.on_request_permission(params, function(option_id)
 			if not option_id or option_id == "" then
+				acp_debug(
+					self.provider,
+					"permission request cancelled session=%s id=%s",
+					tostring(params.sessionId or ""),
+					tostring(message_id or "")
+				)
 				self:respond(message_id, { outcome = { outcome = "cancelled" } })
 				if next(self.callbacks) and self.transport and self.transport.set_idle_armed then
 					self.transport:set_idle_armed(true)
 				end
 				return
 			end
+			acp_debug(
+				self.provider,
+				"permission request selected session=%s id=%s option=%s",
+				tostring(params.sessionId or ""),
+				tostring(message_id or ""),
+				tostring(option_id)
+			)
 			self:respond(message_id, { outcome = { outcome = "selected", optionId = option_id } })
 			if next(self.callbacks) and self.transport and self.transport.set_idle_armed then
 				self.transport:set_idle_armed(true)
@@ -354,6 +663,7 @@ function Client:start(on_ready)
 
 	self.transport:start()
 	self.state = "initializing"
+	acp_debug(self.provider, "initialize begin retries=%d", config.current.initialize_retries or 0)
 	self:_initialize_with_retry(0)
 end
 
@@ -400,6 +710,14 @@ function Client:_initialize_with_retry(attempt)
 		self.agent_info = result.agentInfo
 		self.agent_capabilities = result.agentCapabilities
 		self.state = "ready"
+		acp_debug(
+			self.provider,
+			"initialize ready protocol=%s agent=%s version=%s capabilities=%s",
+			tostring(self.protocol_version),
+			tostring(self.agent_info and self.agent_info.name or ""),
+			tostring(self.agent_info and self.agent_info.version or ""),
+			vim.inspect(self.agent_capabilities or {})
+		)
 		local listeners = self.ready_listeners
 		self.ready_listeners = {}
 		for _, listener in ipairs(listeners) do
@@ -454,7 +772,12 @@ function Client:close_session(session_id, callback)
 		return
 	end
 	if not self:supports_session_close() then
-		log.debug("acp: skipping session/close; provider did not advertise sessionCapabilities.close")
+		log.debug(
+			("acp[%s]: skipping session/close; provider did not advertise sessionCapabilities.close session=%s"):format(
+				provider_label(self.provider),
+				tostring(session_id)
+			)
+		)
 		if callback then
 			vim.schedule(function()
 				callback(nil, nil)
@@ -462,9 +785,18 @@ function Client:close_session(session_id, callback)
 		end
 		return
 	end
+	acp_debug(self.provider, "session/close start session=%s", tostring(session_id))
 	return self:request("session/close", { sessionId = session_id }, function(result, err)
 		if err then
-			log.warn("acp: session/close failed: " .. vim.inspect(err))
+			log.warn(
+				("acp[%s]: session/close failed session=%s err=%s"):format(
+					provider_label(self.provider),
+					tostring(session_id),
+					vim.inspect(err)
+				)
+			)
+		else
+			acp_debug(self.provider, "session/close done session=%s", tostring(session_id))
 		end
 		if callback then
 			callback(result, err)
@@ -542,15 +874,35 @@ local function _get_completion_client(provider, on_ready)
 	local entry = _completion_clients[key]
 	if entry and entry.client and entry.client.state ~= "disconnected" and entry.client.state ~= "error" then
 		if entry.authenticated and entry.client:is_ready() then
+			completion_debug(
+				"client reuse provider=%s key=%s state=%s authenticated=true",
+				provider_label(provider),
+				display_key(key),
+				tostring(entry.client.state)
+			)
 			vim.schedule(function()
 				on_ready(entry.client, nil)
 			end)
 		else
+			completion_debug(
+				"client wait provider=%s key=%s state=%s authenticated=%s waiters=%d",
+				provider_label(provider),
+				display_key(key),
+				tostring(entry.client.state),
+				tostring(entry.authenticated),
+				#entry.ready_waiters + 1
+			)
 			entry.ready_waiters[#entry.ready_waiters + 1] = on_ready
 		end
 		return entry.client
 	end
 
+	completion_debug(
+		"client create provider=%s command=%s key=%s",
+		provider_label(provider),
+		command_summary(provider),
+		display_key(key)
+	)
 	local client = _create_client(provider, { host_fs = false })
 	entry = {
 		client = client,
@@ -561,11 +913,17 @@ local function _get_completion_client(provider, on_ready)
 
 	client:start(function(c)
 		if not c then
+			completion_debug("client start failed provider=%s key=%s", provider_label(provider), display_key(key))
 			_completion_clients[key] = nil
 			_flush_completion_waiters(entry, nil, { message = "completion client unavailable" })
 			return
 		end
 		if provider.auth_method and provider.auth_method ~= "" then
+			completion_debug(
+				"client authenticate start provider=%s method=%s",
+				provider_label(provider),
+				tostring(provider.auth_method)
+			)
 			c:request("authenticate", { methodId = provider.auth_method }, function(_, err)
 				if err then
 					log.error("acp[completion]: authenticate failed: " .. vim.inspect(err))
@@ -573,10 +931,12 @@ local function _get_completion_client(provider, on_ready)
 					_flush_completion_waiters(entry, nil, err)
 					return
 				end
+				completion_debug("client authenticate done provider=%s", provider_label(provider))
 				entry.authenticated = true
 				_flush_completion_waiters(entry, c, nil)
 			end)
 		else
+			completion_debug("client ready provider=%s auth=none", provider_label(provider))
 			entry.authenticated = true
 			_flush_completion_waiters(entry, c, nil)
 		end
@@ -666,6 +1026,27 @@ local function _model_config_values(option)
 	return values
 end
 
+local function _model_option_summary(option)
+	if type(option) ~= "table" then
+		return "none"
+	end
+	local values = _model_config_values(option)
+	local displayed = {}
+	for i = 1, math.min(#values, 8) do
+		displayed[#displayed + 1] = values[i]
+	end
+	if #values > #displayed then
+		displayed[#displayed + 1] = "..."
+	end
+	return ("id=%s name=%s current=%s options=%d values=%s"):format(
+		tostring(option.id or ""),
+		tostring(option.name or ""),
+		tostring(option.currentValue or ""),
+		#(option.options or {}),
+		table.concat(displayed, ",")
+	)
+end
+
 local function _scope_block(scope)
 	if type(scope) ~= "table" or type(scope.text) ~= "string" or scope.text == "" then
 		return nil
@@ -739,15 +1120,50 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 	local pending_requests = {}
 	local complete_cfg = config.current.complete or {}
 	local prompt_timeout_ms = complete_cfg.prompt_timeout_ms
+	local started_ms = now_ms()
+	local chunk_count = 0
+	local streamed_chars = 0
+	local update_count = 0
+
+	local scope = request.scope or {}
+	completion_debug(
+		"stream start provider=%s command=%s model=%s cwd=%s prompt_timeout_ms=%s prefix_chars=%d suffix_chars=%d scope=%s:%s-%s",
+		provider_label(provider),
+		command_summary(provider),
+		tostring(request.model or ""),
+		tostring(request.cwd or ""),
+		tostring(prompt_timeout_ms),
+		#tostring(request.prefix or ""),
+		#tostring(request.suffix or ""),
+		tostring(scope.type or "none"),
+		tostring(scope.start_line or ""),
+		tostring(scope.end_line or "")
+	)
 
 	local function track_request(id)
 		if id then
 			pending_requests[id] = true
+			completion_debug(
+				"track request id=%s session=%s pending=%s",
+				tostring(id),
+				tostring(session_id or ""),
+				pending_summary(pending_requests)
+			)
 		end
 		return id
 	end
 
 	local function untrack_request(id)
+		if id and pending_requests[id] then
+			pending_requests[id] = nil
+			completion_debug(
+				"untrack request id=%s session=%s pending=%s",
+				tostring(id),
+				tostring(session_id or ""),
+				pending_summary(pending_requests)
+			)
+			return
+		end
 		pending_requests[id] = nil
 	end
 
@@ -765,6 +1181,7 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 			return
 		end
 		session_closed = true
+		completion_debug("session close requested session=%s", tostring(session_id))
 		client_ref:close_session(session_id)
 	end
 
@@ -774,6 +1191,17 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 		end
 		done = true
 		active = false
+		completion_debug(
+			"stream finish status=%s elapsed_ms=%d session=%s chunks=%d streamed_chars=%d updates=%d pending=%s err=%s",
+			err and "error" or "ok",
+			elapsed_ms(started_ms),
+			tostring(session_id or ""),
+			chunk_count,
+			streamed_chars,
+			update_count,
+			pending_summary(pending_requests),
+			err_summary(err)
+		)
 		forget_pending_requests()
 		if session_id and client_ref then
 			client_ref:unsubscribe(session_id)
@@ -793,28 +1221,65 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 			return
 		end
 		client_ref = client
+		completion_debug(
+			"client ready provider=%s state=%s agent=%s protocol=%s elapsed_ms=%d",
+			provider_label(provider),
+			tostring(client.state or ""),
+			tostring(client.agent_info and client.agent_info.name or ""),
+			tostring(client.protocol_version or ""),
+			elapsed_ms(started_ms)
+		)
 		local new_session_request_id
+		local session_started_ms = now_ms()
+		completion_debug("session/new start cwd=%s", tostring(request.cwd or vim.fn.getcwd()))
 		new_session_request_id = track_request(client:new_session(request.cwd or vim.fn.getcwd(), function(result, err)
 			untrack_request(new_session_request_id)
 			if not active then
 				return
 			end
 			if err or not result or not result.sessionId then
+				completion_debug(
+					"session/new failed elapsed_ms=%d err=%s",
+					elapsed_ms(session_started_ms),
+					err_summary(err)
+				)
 				finish(err or "session/new returned no sessionId")
 				return
 			end
 			session_id = result.sessionId
+			completion_debug(
+				"session/new done session=%s elapsed_ms=%d config_options=%d model_option=%s",
+				tostring(session_id),
+				elapsed_ms(session_started_ms),
+				#(result.configOptions or {}),
+				_model_option_summary(_model_config_option(result.configOptions))
+			)
 
 			client:subscribe(session_id, {
 				on_update = function(update)
 					if not active then
 						return
 					end
+					update_count = update_count + 1
+					completion_debug(
+						"session/update session=%s update=%s",
+						tostring(session_id),
+						tostring(update.sessionUpdate or "")
+					)
 					if update.sessionUpdate ~= "agent_message_chunk" then
 						return
 					end
 					local content = update.content
 					if type(content) == "table" and content.type == "text" and content.text then
+						chunk_count = chunk_count + 1
+						streamed_chars = streamed_chars + #content.text
+						completion_debug(
+							"chunk recv session=%s chunk=%d chars=%d total_chars=%d",
+							tostring(session_id),
+							chunk_count,
+							#content.text,
+							streamed_chars
+						)
 						vim.schedule(function()
 							if active then
 								on_chunk(content.text)
@@ -823,13 +1288,23 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 					end
 				end,
 				on_request_permission = function(params, respond)
+					params = params or {}
 					local allow = nil
 					if config.current.complete and config.current.complete.allow_read_tools then
 						allow = _choose_completion_permission(params)
 					end
+					local tool_call = params and params.toolCall or {}
+					completion_debug(
+						"permission request session=%s tool=%s kind=%s allow=%s",
+						tostring(session_id),
+						tostring(tool_call.name or params.toolName or ""),
+						tostring(tool_call.kind or params.kind or ""),
+						tostring(allow or "")
+					)
 					respond(allow or "")
 				end,
 			})
+			completion_debug("session subscribed session=%s", tostring(session_id))
 
 			local function send_prompt()
 				local prompt_request_id
@@ -838,44 +1313,76 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 					prompt_opts = { timeout_ms = prompt_timeout_ms }
 				end
 				local prompt_text = _completion_prompt(request)
-				if complete_cfg.debug == true then
-					local scope = request.scope or {}
-					log.debug(
-						("acp[completion]: send prompt provider=%s model=%s prompt_chars=%d prefix_chars=%d suffix_chars=%d scope=%s:%s-%s"):format(
-							tostring(provider.name or provider.command),
-							tostring(request.model or ""),
-							#prompt_text,
-							#tostring(request.prefix or ""),
-							#tostring(request.suffix or ""),
-							tostring(scope.type or "none"),
-							tostring(scope.start_line or ""),
-							tostring(scope.end_line or "")
-						)
-					)
-				end
+				local prompt_started_ms = now_ms()
+				completion_debug(
+					"send prompt provider=%s session=%s model=%s prompt_chars=%d prefix_chars=%d suffix_chars=%d timeout_ms=%s scope=%s:%s-%s",
+					tostring(provider.name or provider.command),
+					tostring(session_id),
+					tostring(request.model or ""),
+					#prompt_text,
+					#tostring(request.prefix or ""),
+					#tostring(request.suffix or ""),
+					tostring(prompt_timeout_ms),
+					tostring(scope.type or "none"),
+					tostring(scope.start_line or ""),
+					tostring(scope.end_line or "")
+				)
 				prompt_request_id = track_request(client:prompt(session_id, {
 					{ type = "text", text = prompt_text },
 				}, function(_, prompt_err)
 					untrack_request(prompt_request_id)
+					completion_debug(
+						"prompt done session=%s id=%s elapsed_ms=%d chunks=%d streamed_chars=%d err=%s",
+						tostring(session_id),
+						tostring(prompt_request_id or ""),
+						elapsed_ms(prompt_started_ms),
+						chunk_count,
+						streamed_chars,
+						err_summary(prompt_err)
+					)
 					finish(prompt_err)
 				end, prompt_opts))
+				completion_debug(
+					"prompt request sent session=%s id=%s timeout_ms=%s",
+					tostring(session_id),
+					tostring(prompt_request_id or ""),
+					tostring(prompt_timeout_ms)
+				)
 			end
 
 			local function configure_model(callback)
 				if not request.model or request.model == "" then
+					completion_debug("model config skipped session=%s reason=no_requested_model", tostring(session_id))
 					callback(nil)
 					return
 				end
 
 				local model_option = _model_config_option(result.configOptions)
 				if not model_option then
-					log.debug("acp[completion]: no model config option advertised; using provider default")
+					completion_debug(
+						"model config skipped session=%s requested=%s reason=no_model_option config_options=%d",
+						tostring(session_id),
+						tostring(request.model),
+						#(result.configOptions or {})
+					)
 					callback(nil)
 					return
 				end
 
+				completion_debug(
+					"model config advertised session=%s requested=%s option=%s",
+					tostring(session_id),
+					tostring(request.model),
+					_model_option_summary(model_option)
+				)
 				local model_value = _model_config_value(model_option, request.model)
 				if not model_value then
+					completion_debug(
+						"model config failed session=%s requested=%s available=%s",
+						tostring(session_id),
+						tostring(request.model),
+						table.concat(_model_config_values(model_option), ",")
+					)
 					callback({
 						code = -32602,
 						message = "requested completion model is not advertised by provider: "
@@ -886,14 +1393,35 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 				end
 
 				if model_option.currentValue == model_value then
+					completion_debug(
+						"model config already selected session=%s requested=%s value=%s",
+						tostring(session_id),
+						tostring(request.model),
+						tostring(model_value)
+					)
 					callback(nil)
 					return
 				end
 
 				local model_request_id
+				local model_started_ms = now_ms()
+				completion_debug(
+					"model config set start session=%s requested=%s value=%s option=%s",
+					tostring(session_id),
+					tostring(request.model),
+					tostring(model_value),
+					tostring(model_option.id or "")
+				)
 				model_request_id = track_request(
 					client:set_config_option(session_id, model_option.id, model_value, function(_, model_err)
 						untrack_request(model_request_id)
+						completion_debug(
+							"model config set done session=%s id=%s elapsed_ms=%d err=%s",
+							tostring(session_id),
+							tostring(model_request_id or ""),
+							elapsed_ms(model_started_ms),
+							err_summary(model_err)
+						)
 						callback(model_err)
 					end)
 				)
