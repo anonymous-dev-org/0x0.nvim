@@ -10,6 +10,7 @@ describe("acp inline completion lifecycle", function()
 			set_config = {},
 			set_model = {},
 			unsubscribe = {},
+			prompt_blocks = {},
 			prompt_opts = {},
 		}
 
@@ -43,6 +44,7 @@ describe("acp inline completion lifecycle", function()
 				return self:request("session/new", { cwd = cwd }, callback)
 			end,
 			prompt = function(self, session_id, blocks, callback, opts)
+				calls.prompt_blocks[#calls.prompt_blocks + 1] = blocks
 				calls.prompt_opts[#calls.prompt_opts + 1] = opts
 				if overrides.prompt_hangs then
 					return self:request("session/prompt", { sessionId = session_id, prompt = blocks }, callback, opts)
@@ -356,6 +358,45 @@ describe("acp inline completion lifecycle", function()
 		assert.are.equal(0, #calls.set_config)
 		assert.are.equal(0, #calls.prompt_opts)
 		assert.are.same({ "fast" }, done_err.data.availableModels)
+	end)
+
+	it("prompts for tagged insert-only completion with focused scope", function()
+		local fake_client, calls = make_fake_client()
+		acp_client._set_client_factory(function()
+			return fake_client
+		end)
+
+		local done_err = "pending"
+		local abort = acp_client.stream_completion({ command = "fake", name = "Fake ACP" }, {
+			prefix = "local value = ",
+			suffix = "\nprint(value)",
+			cwd = "/tmp",
+			filepath = "/tmp/example.lua",
+			language = "lua",
+			cursor = { line = 2, column = 14 },
+			scope = {
+				type = "function_declaration",
+				start_line = 1,
+				end_line = 4,
+				text = "local function example()\n  local value = \n  print(value)\nend",
+			},
+		}, function() end, function(err)
+			done_err = err
+		end)
+
+		assert.is_true(vim.wait(500, function()
+			return done_err ~= "pending"
+		end))
+		abort()
+
+		assert.is_nil(done_err)
+		local prompt = calls.prompt_blocks[1][1].text
+		assert.is_truthy(prompt:find("Do not inspect the repository", 1, true))
+		assert.is_truthy(prompt:find("<completion>RAW_TEXT_TO_INSERT</completion>", 1, true))
+		assert.is_truthy(prompt:find("<focused_scope", 1, true))
+		assert.is_truthy(prompt:find("function_declaration", 1, true))
+		assert.is_truthy(prompt:find("<prefix>\nlocal value = ", 1, true))
+		assert.is_truthy(prompt:find("<suffix>\n\nprint(value)", 1, true))
 	end)
 
 	it("passes prompt_timeout_ms to session/prompt requests", function()

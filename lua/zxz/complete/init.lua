@@ -56,6 +56,85 @@ local function line_after_cursor(line, col)
 	return line:sub(col + 1)
 end
 
+local function debug_enabled()
+	local complete = config.current.complete or {}
+	return complete.debug == true
+end
+
+local function debug_log(message)
+	if debug_enabled() then
+		log.debug("complete: " .. message)
+	end
+end
+
+local function preview(text, max_len)
+	text = tostring(text or ""):gsub("\n", "\\n")
+	max_len = max_len or 120
+	if #text <= max_len then
+		return text
+	end
+	return text:sub(1, max_len) .. "..."
+end
+
+local function scope_summary(scope)
+	if type(scope) ~= "table" then
+		return "none"
+	end
+	return ("%s:%s-%s chars=%d"):format(
+		tostring(scope.type or "scope"),
+		tostring(scope.start_line or "?"),
+		tostring(scope.end_line or "?"),
+		#tostring(scope.text or "")
+	)
+end
+
+local function extract_tagged_completion(text)
+	local open_start, open_end = text:find("<completion[^>]*>")
+	if open_start then
+		local content = text:sub(open_end + 1)
+		local close_start = content:find("</completion>", 1, true)
+		if close_start then
+			content = content:sub(1, close_start - 1)
+		end
+		content = content:gsub("^\r?\n", ""):gsub("\r?\n%s*$", "")
+		return content, true
+	end
+
+	local trimmed = vim.trim(text)
+	if trimmed:match("^<[^>]*$") or trimmed:match("^</?completion") then
+		return "", true
+	end
+
+	return text, false
+end
+
+local function looks_like_agent_chatter(first_line)
+	local lower = vim.trim(first_line or ""):lower()
+	if lower == "" then
+		return false
+	end
+	local patterns = {
+		"^checking%s",
+		"^looking%s",
+		"^inspecting%s",
+		"^searching%s",
+		"^reading%s",
+		"^i%s+can't",
+		"^i%s+cannot",
+		"^i%s+am%s",
+		"^i'm%s",
+		"^there%s+is%s+nothing",
+		"^no%s+inferable",
+		"^%(empty",
+	}
+	for _, pattern in ipairs(patterns) do
+		if lower:find(pattern) then
+			return true
+		end
+	end
+	return false
+end
+
 local M = {}
 
 ---@type fun()? Current request abort function
@@ -91,6 +170,8 @@ local function visible_completion(text, before)
 	text = (text or ""):gsub("^%s*```[%w_-]*\n?", ""):gsub("\n?```%s*$", "")
 	text = text:gsub("^[\r\n]+", "")
 	text = text:gsub("[%z\1-\8\11\12\14-\31\127]", "")
+	local tagged
+	text, tagged = extract_tagged_completion(text)
 	if before and before ~= "" and text:sub(1, #before) == before then
 		text = text:sub(#before + 1)
 	end
@@ -99,6 +180,9 @@ local function visible_completion(text, before)
 		return nil
 	end
 	if vim.trim(first_line):lower():find("^let me think") then
+		return nil
+	end
+	if not tagged and looks_like_agent_chatter(first_line) then
 		return nil
 	end
 	return text
@@ -168,18 +252,21 @@ function M._on_text_changed()
 	-- Explicit per-buffer opt-out. Set by buffers that don't want ambient AI
 	-- completion (e.g. chat input/transcript via disable_ambient_completion).
 	if vim.b[bufnr].zxz_complete_disable then
+		debug_log("skip: buffer disabled")
 		return
 	end
 
 	-- Fallback safety net: only run in regular file buffers. Catches terminal,
 	-- prompt, nofile scratch buffers, and anything that forgot to set the flag.
 	if vim.bo[bufnr].buftype ~= "" then
+		debug_log("skip: buftype=" .. tostring(vim.bo[bufnr].buftype))
 		return
 	end
 
 	-- Check filetype exclusion
 	for _, excluded in ipairs(cfg.filetypes.exclude) do
 		if ft == excluded then
+			debug_log("skip: excluded filetype=" .. tostring(ft))
 			return
 		end
 	end
@@ -194,10 +281,12 @@ function M._on_text_changed()
 
 	-- Don't trigger on empty lines or very short prefixes
 	if before:match("^%s*$") then
+		debug_log("skip: empty prefix")
 		M.dismiss()
 		return
 	end
 	if after ~= "" then
+		debug_log("skip: cursor is not at end of line")
 		M.dismiss()
 		return
 	end
@@ -211,6 +300,7 @@ function M._on_text_changed()
 			while n do
 				local t = n:type()
 				if t:match("comment") or t == "string" or t:match("string_") or t:match("_string") then
+					debug_log("skip: treesitter node=" .. tostring(t))
 					M.dismiss()
 					return
 				end
@@ -223,6 +313,7 @@ function M._on_text_changed()
 		local ctx = context.gather()
 		local cached, key = cache.get_or_shift(ctx.prefix, ctx.suffix, ctx.language)
 		if cached then
+			debug_log("cache hit key=" .. tostring(key))
 			M._cancel_request_only()
 			ghost.show(bufnr, row - 1, col, cached)
 			_last_cache_key = key
@@ -233,6 +324,7 @@ function M._on_text_changed()
 	M._cancel()
 
 	-- Debounce the completion request
+	debug_log("schedule request debounce_ms=" .. tostring(cfg.debounce_ms))
 	debounce.start(cfg.debounce_ms, function()
 		M._request_completion()
 	end)
@@ -245,6 +337,7 @@ function M._request_completion()
 
 	-- Check we're still in insert mode
 	if M._mode() ~= "i" then
+		debug_log("request aborted: mode=" .. tostring(M._mode()))
 		return
 	end
 
@@ -256,19 +349,34 @@ function M._request_completion()
 	local before = line_before_cursor(line, col)
 	local after = line_after_cursor(line, col)
 	if after ~= "" then
+		debug_log("request aborted: cursor is not at end of line")
 		M.dismiss()
 		return
 	end
 	local cwd = project_cwd()
 	local provider, model = resolve_provider()
 	if not provider then
+		debug_log("request aborted: provider resolution failed")
 		return
 	end
+	debug_log(
+		("request start provider=%s model=%s file=%s line=%s col=%s prefix_chars=%d suffix_chars=%d scope=%s"):format(
+			tostring(provider.name or provider.command),
+			tostring(model),
+			tostring(ctx.filepath),
+			tostring(ctx.cursor and ctx.cursor.line or "?"),
+			tostring(ctx.cursor and ctx.cursor.column or "?"),
+			#tostring(ctx.prefix or ""),
+			#tostring(ctx.suffix or ""),
+			scope_summary(ctx.scope)
+		)
+	)
 
 	-- Check cache
 	if cfg.cache.enabled then
 		local cached, key = cache.get_or_shift(ctx.prefix, ctx.suffix, ctx.language)
 		if cached then
+			debug_log("request cache hit key=" .. tostring(key))
 			ghost.show(bufnr, row, col, cached)
 			_last_cache_key = key
 			return
@@ -279,12 +387,15 @@ function M._request_completion()
 	local request_id = _request_id
 	_streaming_text = ""
 	_visible_text = ""
+	local first_chunk_logged = false
 
 	_abort_fn = client.stream_completion(provider, {
 		prefix = ctx.prefix,
 		suffix = ctx.suffix,
 		language = ctx.language,
 		filepath = ctx.filepath,
+		cursor = ctx.cursor,
+		scope = ctx.scope,
 		cwd = cwd,
 		max_tokens = cfg.max_tokens,
 		temperature = cfg.temperature,
@@ -295,15 +406,21 @@ function M._request_completion()
 		end
 		-- On each text chunk
 		_streaming_text = _streaming_text .. chunk
+		if not first_chunk_logged then
+			first_chunk_logged = true
+			debug_log("first chunk request_id=" .. tostring(request_id) .. " text=" .. preview(chunk, 160))
+		end
 
 		-- Check we're still in insert mode in the same buffer and position.
 		if M._mode() ~= "i" or vim.api.nvim_get_current_buf() ~= bufnr then
+			debug_log("cancel: mode/buffer changed during stream")
 			M._cancel()
 			return
 		end
 
 		local cur = vim.api.nvim_win_get_cursor(0)
 		if cur[1] - 1 ~= row or cur[2] ~= col then
+			debug_log("cancel: cursor moved during stream")
 			M._cancel()
 			return
 		end
@@ -328,6 +445,14 @@ function M._request_completion()
 			end)
 			return
 		end
+		debug_log(
+			("request done request_id=%s streamed_chars=%d visible_chars=%d visible=%s"):format(
+				tostring(request_id),
+				#_streaming_text,
+				#_visible_text,
+				preview(_visible_text, 120)
+			)
+		)
 
 		-- Cache the result
 		if cfg.cache.enabled and _visible_text ~= "" then

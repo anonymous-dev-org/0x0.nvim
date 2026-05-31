@@ -254,6 +254,64 @@ describe("inline completion", function()
 		assert.is_nil(ghost.get_text())
 	end)
 
+	it("unwraps tagged completions before rendering", function()
+		local acp_client = require("zxz.core.acp_client")
+		local original = acp_client.stream_completion
+		acp_client.stream_completion = function(provider, request, on_chunk, on_done)
+			on_chunk("<completion>\n42\n</completion>")
+			on_done()
+			return function() end
+		end
+
+		local complete = require("zxz.complete")
+		local ghost = require("zxz.complete.ghost")
+		local bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_set_current_buf(bufnr)
+		vim.bo[bufnr].filetype = "lua"
+		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-tagged.lua")
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
+		vim.wo.virtualedit = "onemore"
+		vim.api.nvim_win_set_cursor(0, { 1, 14 })
+		complete._mode = function()
+			return "i"
+		end
+
+		complete._request_completion()
+
+		acp_client.stream_completion = original
+
+		assert.are.equal("42", ghost.get_text())
+	end)
+
+	it("does not render obvious agent chatter as ghost text", function()
+		local acp_client = require("zxz.core.acp_client")
+		local original = acp_client.stream_completion
+		acp_client.stream_completion = function(provider, request, on_chunk, on_done)
+			on_chunk("Checking the repo for context before answering.")
+			on_done()
+			return function() end
+		end
+
+		local complete = require("zxz.complete")
+		local ghost = require("zxz.complete.ghost")
+		local bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_set_current_buf(bufnr)
+		vim.bo[bufnr].filetype = "lua"
+		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-chatter.lua")
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
+		vim.wo.virtualedit = "onemore"
+		vim.api.nvim_win_set_cursor(0, { 1, 14 })
+		complete._mode = function()
+			return "i"
+		end
+
+		complete._request_completion()
+
+		acp_client.stream_completion = original
+
+		assert.is_nil(ghost.get_text())
+	end)
+
 	it("falls back from thinking model names before routing", function()
 		config.setup({
 			complete = {

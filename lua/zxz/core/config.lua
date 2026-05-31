@@ -87,6 +87,7 @@ M.defaults = {
 		prompt_timeout_ms = 15000,
 		trigger_on_cursor_moved = false,
 		allow_read_tools = false,
+		debug = false,
 		suppress_in_strings_and_comments = true,
 		keymaps = {
 			enabled = true,

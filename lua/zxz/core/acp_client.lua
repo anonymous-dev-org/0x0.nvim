@@ -663,32 +663,61 @@ local function _model_config_values(option)
 	return values
 end
 
-local function _completion_prompt(request)
+local function _scope_block(scope)
+	if type(scope) ~= "table" or type(scope.text) ~= "string" or scope.text == "" then
+		return nil
+	end
 	return table.concat({
+		("<focused_scope type=%q start_line=%s end_line=%s>"):format(
+			tostring(scope.type or ""),
+			tostring(scope.start_line or ""),
+			tostring(scope.end_line or "")
+		),
+		scope.text,
+		"</focused_scope>",
+	}, "\n")
+end
+
+local function _completion_prompt(request)
+	local lines = {
 		"You are an inline code completion engine.",
-		"Predict the short fragment the user is most likely to type next at the cursor,",
-		"inferring intent from the surrounding code in <prefix> and <suffix>.",
+		"This is a fill-in-the-middle request. The cursor is exactly between",
+		"</prefix> and <suffix>. Use only the supplied context.",
 		"",
-		"Rules:",
-		"- Return ONLY the raw text to insert at the cursor. No prose, no explanations.",
-		"- Do not include thinking, preambles, or text like 'Let me think about this'.",
-		"- No markdown fences, no language tags, no comments about the code.",
-		"- Do not repeat any text from <prefix> or <suffix>.",
-		"- Prefer a single line. Stop at the end of the current phrase, expression,",
-		"  statement, or call — whichever ends first. Output the shortest useful completion.",
+		"Hard rules:",
+		"- Do not inspect the repository, run tools, ask questions, or describe your process.",
+		"- Return exactly one XML block: <completion>RAW_TEXT_TO_INSERT</completion>.",
+		"- Put no prose, markdown, reasoning, status text, or code fences outside that block.",
+		"- RAW_TEXT_TO_INSERT must be exactly insertable at the cursor.",
+		"- Do not repeat text already present in <prefix> or <suffix>.",
+		"- Prefer completing the current line. Use newlines only when the next edit is clearly",
+		"  a multi-line expression, statement, block, or argument list.",
+		"- Stop at the end of the current phrase, expression, statement, call, or block.",
 		"- If the cursor is mid-identifier, complete that identifier only.",
-		"- If nothing useful can be added, return an empty string.",
+		"- If nothing useful can be added, return <completion></completion>.",
 		"",
 		"File: " .. tostring(request.filepath or ""),
 		"Language: " .. tostring(request.language or ""),
+		"Cursor line: " .. tostring(request.cursor and request.cursor.line or ""),
+		"Cursor byte column: " .. tostring(request.cursor and request.cursor.column or ""),
 		"",
+	}
+
+	local scope = _scope_block(request.scope)
+	if scope then
+		lines[#lines + 1] = scope
+		lines[#lines + 1] = ""
+	end
+
+	vim.list_extend(lines, {
 		"<prefix>",
 		request.prefix or "",
 		"</prefix>",
 		"<suffix>",
 		request.suffix or "",
 		"</suffix>",
-	}, "\n")
+	})
+	return table.concat(lines, "\n")
 end
 
 ---Stream an inline completion. Completion sessions are read-only: they do not
@@ -805,8 +834,24 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 				if prompt_timeout_ms ~= nil then
 					prompt_opts = { timeout_ms = prompt_timeout_ms }
 				end
+				local prompt_text = _completion_prompt(request)
+				if complete_cfg.debug == true then
+					local scope = request.scope or {}
+					log.debug(
+						("acp[completion]: send prompt provider=%s model=%s prompt_chars=%d prefix_chars=%d suffix_chars=%d scope=%s:%s-%s"):format(
+							tostring(provider.name or provider.command),
+							tostring(request.model or ""),
+							#prompt_text,
+							#tostring(request.prefix or ""),
+							#tostring(request.suffix or ""),
+							tostring(scope.type or "none"),
+							tostring(scope.start_line or ""),
+							tostring(scope.end_line or "")
+						)
+					)
+				end
 				prompt_request_id = track_request(client:prompt(session_id, {
-					{ type = "text", text = _completion_prompt(request) },
+					{ type = "text", text = prompt_text },
 				}, function(_, prompt_err)
 					untrack_request(prompt_request_id)
 					finish(prompt_err)

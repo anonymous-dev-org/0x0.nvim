@@ -6,9 +6,91 @@ local M = {}
 --- Maximum lines to include in prefix/suffix.
 local MAX_PREFIX_LINES = 1500
 local MAX_SUFFIX_LINES = 500
+local MAX_SCOPE_LINES = 300
+
+local SCOPE_TYPE_MARKERS = {
+	"function",
+	"method",
+	"class",
+	"struct",
+	"interface",
+	"impl",
+	"object",
+	"block",
+	"chunk",
+	"program",
+	"source_file",
+}
+
+local function is_scope_node(node_type)
+	if type(node_type) ~= "string" or node_type == "" then
+		return false
+	end
+	for _, marker in ipairs(SCOPE_TYPE_MARKERS) do
+		if node_type == marker or node_type:find(marker, 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+local function gather_scope(bufnr, row, col)
+	if not vim.treesitter or not vim.treesitter.get_node then
+		return nil
+	end
+
+	local ok, node = pcall(vim.treesitter.get_node, {
+		bufnr = bufnr,
+		pos = { row - 1, math.max(col - 1, 0) },
+	})
+	if not ok or not node then
+		return nil
+	end
+
+	local scope = nil
+	local n = node
+	while n do
+		local node_type = n:type()
+		if is_scope_node(node_type) then
+			scope = n
+			break
+		end
+		n = n:parent()
+	end
+	if not scope then
+		return nil
+	end
+
+	local start_row, _, end_row = scope:range()
+	local total = vim.api.nvim_buf_line_count(bufnr)
+	start_row = math.max(0, start_row)
+	end_row = math.min(total - 1, end_row)
+	if end_row < start_row then
+		return nil
+	end
+
+	local line_count = end_row - start_row + 1
+	if line_count > MAX_SCOPE_LINES then
+		local half = math.floor(MAX_SCOPE_LINES / 2)
+		start_row = math.max(0, row - 1 - half)
+		end_row = math.min(total - 1, start_row + MAX_SCOPE_LINES - 1)
+	end
+
+	local lines = vim.api.nvim_buf_get_lines(bufnr, start_row, end_row + 1, false)
+	if #lines == 0 then
+		return nil
+	end
+
+	return {
+		type = scope:type(),
+		start_line = start_row + 1,
+		end_line = end_row + 1,
+		text = table.concat(lines, "\n"),
+	}
+end
 
 --- Gather context from the current buffer at the cursor position.
----@return { prefix: string, suffix: string, language: string, filepath: string }
+---@return { prefix: string, suffix: string, language: string, filepath: string, cursor: table, scope: table|nil }
 function M.gather()
 	local bufnr = vim.api.nvim_get_current_buf()
 	local cursor = vim.api.nvim_win_get_cursor(0)
@@ -51,6 +133,11 @@ function M.gather()
 		suffix = suffix,
 		language = filetype,
 		filepath = filepath,
+		cursor = {
+			line = row,
+			column = col,
+		},
+		scope = gather_scope(bufnr, row, col),
 	}
 end
 
