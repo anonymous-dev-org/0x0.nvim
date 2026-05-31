@@ -263,6 +263,52 @@ describe("acp inline completion lifecycle", function()
     assert.are.equal(1, #calls.prompt_opts)
   end)
 
+  it("maps Cursor fast model names to advertised config values", function()
+    local fake_client, calls = make_fake_client({
+      new_session_result = {
+        sessionId = "sess-test",
+        configOptions = {
+          {
+            id = "model",
+            name = "Model",
+            category = "model",
+            type = "select",
+            currentValue = "default[]",
+            options = {
+              { value = "default[]", name = "Auto" },
+              { value = "composer-2.5[fast=true]", name = "composer-2.5" },
+            },
+          },
+        },
+      },
+    })
+    acp_client._set_client_factory(function()
+      return fake_client
+    end)
+
+    local done_err = "pending"
+    local abort = acp_client.stream_completion({ command = "fake" }, {
+      prefix = "local x = ",
+      suffix = "",
+      cwd = "/tmp",
+      model = "composer-2.5-fast",
+    }, function() end, function(err)
+      done_err = err
+    end)
+
+    assert.is_true(vim.wait(500, function()
+      return done_err ~= "pending"
+    end))
+    abort()
+
+    assert.is_nil(done_err)
+    assert.are.same(
+      { session_id = "sess-test", config_id = "model", value = "composer-2.5[fast=true]" },
+      calls.set_config[1]
+    )
+    assert.are.equal(1, #calls.prompt_opts)
+  end)
+
   it("fails before prompting when the requested model is not advertised", function()
     local fake_client, calls = make_fake_client({
       new_session_result = {

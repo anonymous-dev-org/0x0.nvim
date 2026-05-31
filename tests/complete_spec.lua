@@ -174,6 +174,47 @@ describe("inline completion", function()
     assert.are.equal("composer-2.5", captured.request.model)
   end)
 
+  it("routes the fast Cursor composer model to its ACP provider", function()
+    config.setup({
+      complete = {
+        cache = { enabled = false },
+        model = "composer-2.5-fast",
+      },
+    })
+    package.loaded["zxz.complete"] = nil
+
+    local acp_client = require("zxz.core.acp_client")
+    local original = acp_client.stream_completion
+    local captured
+    acp_client.stream_completion = function(provider, request, on_chunk, on_done)
+      captured = { provider = provider, request = request }
+      on_chunk("42")
+      on_done()
+      return function() end
+    end
+
+    local complete = require("zxz.complete")
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_set_current_buf(bufnr)
+    vim.bo[bufnr].filetype = "lua"
+    vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-cursor-fast-acp.lua")
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
+    vim.wo.virtualedit = "onemore"
+    vim.api.nvim_win_set_cursor(0, { 1, 14 })
+    complete._mode = function()
+      return "i"
+    end
+
+    complete._request_completion()
+
+    acp_client.stream_completion = original
+
+    assert.is_truthy(captured)
+    assert.are.equal("cursor-agent", captured.provider.command)
+    assert.are.same({ "acp" }, captured.provider.args)
+    assert.are.equal("composer-2.5-fast", captured.request.model)
+  end)
+
   it("filters thinking models from completion choices", function()
     config.setup({
       complete = {

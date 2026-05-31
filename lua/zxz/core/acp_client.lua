@@ -617,6 +617,7 @@ local function _model_config_value(option, requested_model)
   end
 
   local requested_lower = requested_model:lower()
+  local requested_fast_base = requested_lower:match("^(.*)%-fast$")
   for _, candidate in ipairs(option.options or {}) do
     if type(candidate) == "table" then
       local value = candidate.value
@@ -629,6 +630,13 @@ local function _model_config_value(option, requested_model)
       end
       if type(name) == "string" and name:lower() == requested_lower then
         return value
+      end
+      if requested_fast_base and type(value) == "string" and value ~= "" then
+        local value_lower = value:lower()
+        local value_base = value_lower:match("^(.-)%[") or value_lower
+        if value_base == requested_fast_base and value_lower:find("fast%s*=%s*true") then
+          return value
+        end
       end
     end
   end
