@@ -65,10 +65,11 @@ end
 
 ---@param config { command: string, args?: string[], env?: table<string, string>, ignore_stderr_patterns?: string[] }
 ---@param callbacks { on_state: fun(state: string), on_message: fun(msg: table), on_exit?: fun(code: integer, stderr: string[]), on_idle?: fun(ms: integer) }
----@param opts? { idle_kill_ms?: integer }
+---@param opts? { idle_kill_ms?: integer, sleep_guard?: boolean }
 function M.create(config, callbacks, opts)
 	opts = opts or {}
 	local idle_kill_ms = opts.idle_kill_ms or 0
+	local sleep_guard_enabled = opts.sleep_guard == true
 	local self = {
 		stdin = nil,
 		stdout = nil,
@@ -135,7 +136,7 @@ function M.create(config, callbacks, opts)
 			stop_idle_timer()
 			stop_sleep_guard()
 		else
-			if (not self.sleep_guard or self.sleep_guard:is_closing()) and self.process_pid then
+			if sleep_guard_enabled and (not self.sleep_guard or self.sleep_guard:is_closing()) and self.process_pid then
 				self.sleep_guard = start_sleep_guard(self.process_pid, config.name or config.command)
 			end
 			bump_idle()

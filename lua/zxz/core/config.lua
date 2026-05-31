@@ -13,6 +13,7 @@ local M = {}
 ---@class zxz.Config
 ---@field request_timeout_ms integer  per-request ACP timeout (cancelled with timeout error after)
 ---@field idle_kill_ms integer  kill provider subprocess if no stdout/stderr for this long during a request
+---@field sleep_guard boolean  macOS-only opt-in caffeinate guard while ACP requests are active
 ---@field initialize_retries integer  retry count for the ACP initialize handshake
 ---@field complete table
 ---@field providers table<string, zxz.ProviderConfig>
@@ -75,13 +76,14 @@ local DEFAULT_COMPLETION_MODEL_PROVIDERS = {
 M.defaults = {
 	request_timeout_ms = 60000,
 	idle_kill_ms = 120000,
+	sleep_guard = false,
 	initialize_retries = 3,
 	complete = {
 		enabled = true,
 		model = "gpt-5.3-codex",
 		models = vim.deepcopy(DEFAULT_COMPLETION_MODELS),
 		model_providers = vim.deepcopy(DEFAULT_COMPLETION_MODEL_PROVIDERS),
-		debounce_ms = 150,
+		debounce_ms = 300,
 		max_tokens = 128,
 		temperature = 0,
 		prompt_timeout_ms = 15000,

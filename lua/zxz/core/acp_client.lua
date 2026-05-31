@@ -62,7 +62,10 @@ function M.new(provider, opts)
 				message = "provider hung (no I/O)",
 			})
 		end,
-	}, { idle_kill_ms = config.current.idle_kill_ms or 0 })
+	}, {
+		idle_kill_ms = config.current.idle_kill_ms or 0,
+		sleep_guard = config.current.sleep_guard == true,
+	})
 
 	return self
 end

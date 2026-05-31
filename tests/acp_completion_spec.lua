@@ -2,6 +2,25 @@ describe("acp inline completion lifecycle", function()
 	local acp_client
 	local config
 
+	local function with_transport_stub(stub, fn)
+		local original_client = package.loaded["zxz.core.acp_client"]
+		local original_transport = package.loaded["zxz.core.acp_transport"]
+
+		package.loaded["zxz.core.acp_client"] = nil
+		package.loaded["zxz.core.acp_transport"] = stub
+
+		local ok, err = pcall(function()
+			fn(require("zxz.core.acp_client"))
+		end)
+
+		package.loaded["zxz.core.acp_client"] = original_client
+		package.loaded["zxz.core.acp_transport"] = original_transport
+
+		if not ok then
+			error(err)
+		end
+	end
+
 	local function make_fake_client(overrides)
 		overrides = overrides or {}
 		local calls = {
@@ -133,6 +152,38 @@ describe("acp inline completion lifecycle", function()
 		assert.is_true(vim.wait(500, function()
 			return callback_called
 		end))
+	end)
+
+	it("leaves the macOS sleep guard disabled by default", function()
+		local captured_opts
+		with_transport_stub({
+			create = function(_, _, opts)
+				captured_opts = opts
+				return {}
+			end,
+		}, function(under_test)
+			config.setup({})
+			under_test.new({ command = "fake", name = "fake" })
+		end)
+
+		assert.is_false(captured_opts.sleep_guard)
+	end)
+
+	it("enables the macOS sleep guard only when configured", function()
+		local captured_opts
+		with_transport_stub({
+			create = function(_, _, opts)
+				captured_opts = opts
+				return {}
+			end,
+		}, function(under_test)
+			config.setup({
+				sleep_guard = true,
+			})
+			under_test.new({ command = "fake", name = "fake" })
+		end)
+
+		assert.is_true(captured_opts.sleep_guard)
 	end)
 
 	it("close_session sends session/close request when advertised", function()

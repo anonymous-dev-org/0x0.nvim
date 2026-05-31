@@ -53,6 +53,8 @@ yourself.
   session, 0x0 matches this value against the provider's option `value` or
   display `name`, then sends the option `value` with `session/set_config_option`.
 - **`complete.models`** — model names shown by `:ZxzCompleteSettings`.
+- **`sleep_guard`** — opt-in macOS `caffeinate` guard while ACP requests are
+  active. Defaults to `false`; the provider process is spawned directly.
 
 Thinking/reasoning model variants are filtered out for completion, because
 ghost text must be insertable code rather than assistant preamble.
