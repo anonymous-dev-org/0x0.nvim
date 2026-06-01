@@ -1,7 +1,13 @@
-.PHONY: test test-file lint lint-fix clean
+.PHONY: test test-file lint lint-fix clean build-server test-server
 
 NVIM ?= $(shell command -v nvim)
 TEST_INIT := tests/minimal_init.lua
+
+build-server:
+	cd server && npm install && npm run build
+
+test-server:
+	cd server && npm test
 
 test:
 	$(NVIM) --headless --noplugin -u $(TEST_INIT) \

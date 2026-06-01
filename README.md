@@ -1,8 +1,24 @@
 # 0x0.nvim
 
-Inline ghost-text completion for Neovim, backed by an ACP provider over stdio.
-Users choose a model; 0x0 routes that model to the connected provider
-internally. Cursor support uses `cursor-agent acp`.
+Inline ghost-text completion for Neovim, backed by a bundled Node completion
+server that calls Vercel AI SDK `streamText` through AI Gateway.
+
+## Requirements
+
+- Neovim 0.10+
+- Node.js 18+ on `PATH`
+- An AI Gateway API key (prompted on first use, or set in advance)
+
+On first completion attempt without a key, 0x0 opens a secret prompt. The key is
+saved under `stdpath('state')/0x0/gateway.json`. You can also set it ahead of
+time:
+
+```bash
+export AI_GATEWAY_API_KEY="vck_..."
+```
+
+Or via `:ZxzCompleteSettings` → **API key**, or `complete.gateway.api_key` in
+your plugin config.
 
 ## Install
 
@@ -14,7 +30,7 @@ Example with lazy.nvim:
   opts = {
     complete = {
       enabled = true,
-      model = "gpt-5.3-codex",
+      model = "mistral/codestral",
       keymaps = {
         enabled = true,
         accept = "<Tab>",
@@ -33,16 +49,12 @@ require("zxz").setup({
 })
 ```
 
-Ghost text streams from the model connected to `complete.model` as you type,
-with caching and debouncing. `:ZxzCompleteSettings` lets users toggle
-completion and pick the model. `:ZxzLog` opens the debug log.
+Ghost text streams from the selected gateway model as you type, with caching and
+debouncing. `:ZxzCompleteSettings` lets users toggle completion and pick the
+model. `:ZxzLog` opens the debug log.
 
-Completion sessions are context-only: 0x0 inlines the visible buffer context in
-the prompt, does not expose host filesystem handlers, and cancels provider tool
-permission requests. Sessions are reused only inside a small completion budget
-(`session_reuse.max_prompts = 12`, `max_age_ms = 180000`, `max_idle_ms = 60000`)
-so `session/new` is not paid on every keystroke while short working-burst
-history stays useful and bounded.
+The bundled server inlines buffer context in the prompt and performs plain text
+completion only — no agent tools, no provider subprocesses.
 
 ### nvim-cmp coexistence
 
@@ -56,15 +68,24 @@ yourself.
 - **`complete.*`** — completion settings (model, debounce, cache, keymaps,
   timeouts). Inline prompts use a bounded default (`prompt_timeout_ms = 10000`);
   see `lua/zxz/core/config.lua` for the full defaults.
-- **`complete.model`** — user-facing model name. Provider routing is derived
-  internally. When an ACP provider advertises a model config option for the
-  session, 0x0 matches this value against the provider's option `value` or
-  display `name`, then sends the option `value` with `session/set_config_option`.
-- **`complete.effort`**, **`complete.temperature`**, **`complete.max_tokens`** —
-  applied through ACP session `configOptions` when the provider advertises
-  matching select options. Defaults favor completion latency and determinism:
-  `effort = "none"`, `temperature = 0`, `max_tokens = 128`.
-- **`complete.models`** — model names shown by `:ZxzCompleteSettings`.
+- **`complete.model`** — gateway model id in `provider/model` form, for example
+  `mistral/codestral` or `anthropic/claude-sonnet-4.6`.
+- **`complete.gateway.api_key_env`** — environment variable name for the gateway
+  key (default: `AI_GATEWAY_API_KEY`). Used when no saved key exists.
+- **`complete.gateway.api_key`** — optional direct API key override.
+- **`complete.temperature`**, **`complete.max_tokens`** — passed to
+  `streamText`. Defaults favor completion latency and determinism:
+  `temperature = 0`, `max_tokens = 128`.
+- **`complete.models`** — model ids shown by `:ZxzCompleteSettings`.
 
 Thinking/reasoning model variants are filtered out for completion, because
 ghost text must be insertable code rather than assistant preamble.
+
+## Maintainers
+
+Rebuild the bundled server after changing `server/src/`:
+
+```bash
+make build-server
+make test-server
+```

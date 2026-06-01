@@ -1,0 +1,16 @@
+{
+  "name": "0x0-completion-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "test": "node --experimental-strip-types --test src/prompt.test.ts"
+  },
+  "dependencies": {
+    "ai": "^6.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  }
+}

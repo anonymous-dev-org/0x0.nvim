@@ -10,9 +10,10 @@ line tying it to an observable failure mode.
 
 0x0.nvim is an **inline ghost-text completion plugin** for Neovim:
 
-- **ACP providers** (`codex-acp`, `claude-acp`, `gemini-acp`,
-  `cursor-agent acp`) communicate over stdio via `lua/zxz/core/acp_client.lua`
-  and `lua/zxz/core/acp_transport.lua`.
+- A **bundled Node completion server** (`server/dist/completion-server.js`)
+  streams plain text via Vercel AI SDK `streamText` through AI Gateway. Lua talks
+  to it over stdio through `lua/zxz/core/completion_client.lua` and
+  `lua/zxz/core/completion_transport.lua`.
 - **`lua/zxz/complete/`** owns debouncing, context gathering, ghost rendering,
   caching, and insert-mode keymaps.
 
@@ -22,42 +23,31 @@ User-facing commands:
 - **`:ZxzLog`** — open the persistent debug log.
 
 Forbidden: re-adding a chat panel, worktree review UI, permission ledger,
-terminal-agent launcher, or ACP session manager for multi-turn chat. Keep 0x0
-focused on inline completion only.
+terminal-agent launcher, or multi-turn agent session manager. Keep 0x0 focused on
+inline completion only.
 
 ---
 
-## 2. ACP completion lifecycle
+## 2. Gateway completion lifecycle
 
-`lua/zxz/core/acp_client.lua` (`M.stream_completion`).
+`lua/zxz/core/completion_client.lua` (`M.stream_completion`).
 
-- **One subprocess client singleton per provider command** (`_completion_clients`).
-  **Why:** spawning a new provider on every keystroke is too slow.
-- **A bounded reusable ACP completion session per provider/model/cwd/config**
-  (`session/new` → a capped burst of `session/prompt` turns → teardown). Keep
-  the reuse budget bounded. **Why:** ACP sessions accumulate prompt history, but
-  a short burst of history helps related inline completions while avoiding the
-  seconds of latency and extra no-close provider footprint from creating a fresh
-  session for every debounced keystroke.
-- **Close sessions only when the agent advertises
-  `agentCapabilities.sessionCapabilities.close`**. On normal retirement, send
-  `session/close` as a request only when supported; on abort, always send
-  `session/cancel`. A reusable session stays marked busy until the prompt
-  settles; a retiring session additionally requests `session/close` only when
-  supported.
-  **Why:** ACP requires clients not to call unsupported close methods; providers
-  that lack it return Method-not-found errors, while providers that support it
-  need explicit close to free session resources.
-- **Do not enable host fs for completion sessions** (`host_fs = false`).
-  Context is inlined in the prompt. **Why:** tool loops add latency and fail when
-  fs handlers are absent.
-- **Model selection must use session `configOptions` when the agent advertises a
-  model selector** (`category = "model"` or `id = "model"`). Send the option
-  `value` via `session/set_config_option`; the option `name` is display text.
-  **Why:** current ACP exposes model choices as session config, not
-  `session/set_model`; confusing names with values sends unsupported model ids.
-- **Tool permission requests during completion are cancelled by default.**
-  **Why:** inline completion must not trigger agent tool use.
+- **One Node server singleton** per Neovim instance. **Why:** spawning Node on
+  every keystroke is too slow.
+- **Plain text completion only** — no tools, no agent loop, no `@cursor/sdk`.
+  Context is inlined in the prompt. **Why:** inline completion must be fast and
+  must not trigger tool use.
+- **Auth via `AI_GATEWAY_API_KEY`** (or `complete.gateway.api_key`). Lua injects
+  the key into the subprocess environment at spawn. If no key is configured, 0x0
+  prompts once per session (`vim.ui.input` with `secret = true`) and persists
+  it to `stdpath('state')/0x0/gateway.json`. **Why:** inline completion should
+  work out of the box without requiring shell env setup first.
+- **Abort** sends a `cancel` NDJSON message; the server aborts the in-flight
+  `streamText` call.
+- **Transport death** purges the singleton so the next request respawns cleanly.
+  **Why:** a dead stdin pipe otherwise leaves completion permanently broken until
+  restart.
+- **Prompt timeout** is enforced in Lua (`complete.prompt_timeout_ms`).
 
 ---
 
@@ -82,12 +72,9 @@ focused on inline completion only.
 
 - **`complete.*`** — completion-specific settings (model, debounce, cache,
   keymaps, timeouts).
-- **`complete.model`** is the user-facing selection. Provider routing is derived
-  from the model via `complete.model_providers`.
-- **`complete.effort = "none"`, `complete.temperature = 0`, and
-  `complete.max_tokens = 128`** are applied through ACP session config options
-  when the provider advertises matching selectors. **Why:** inline completion
-  should be deterministic, short, and should not spend time on thinking traces.
+- **`complete.model`** is the user-facing gateway model id (`provider/model`).
+- **`complete.temperature = 0` and `complete.max_tokens = 128`** keep inline
+  completion deterministic and short.
 - **Thinking/reasoning model variants must not be exposed for completion.**
   **Why:** those variants can leak assistant preambles such as "Let me think
   about this" into ghost text.
@@ -100,6 +87,8 @@ focused on inline completion only.
 - `make test` runs the lot.
 - `make test-file FILE=tests/foo_spec.lua` targets one.
 - `make lint` runs Stylua in check mode.
+- `make build-server` rebuilds `server/dist/completion-server.js`.
+- `make test-server` runs Node prompt unit tests.
 
 Currently pinned regression tests:
 
@@ -109,20 +98,22 @@ Currently pinned regression tests:
 | Multiline ghost render/accept | `complete_spec.lua::"renders and accepts multiline ghost text"` |
 | No ghost mid-line | `complete_spec.lua::"does not render ghost text in the middle of a line"` |
 | Nofile buffer gate | `complete_spec.lua::"does not request completions for nofile buffers"` |
-| Model routing + prefix strip | `complete_spec.lua::"uses the resolved provider and drops repeated prefix text"` |
-| Cursor ACP model routing | `complete_spec.lua::"routes the selected model to its ACP provider"` |
-| ACP model config value | `acp_completion_spec.lua::"sets the advertised model config option by value before prompting"` |
+| Model routing + prefix strip | `complete_spec.lua::"uses the resolved model and drops repeated prefix text"` |
+| Gateway model routing | `complete_spec.lua::"routes the selected gateway model"` |
 | Thinking model filtering | `complete_spec.lua::"filters thinking models from completion choices"` |
 | Thinking preamble suppression | `complete_spec.lua::"does not render thinking preambles as ghost text"` |
-| Thinking model fallback | `complete_spec.lua::"falls back from thinking model names before routing"` |
+| Thinking model fallback | `complete_spec.lua::"falls back from thinking model names before requesting"` |
 | Settings surface | `complete_spec.lua::"settings exposes only completion toggle and model selection"` |
+| API key prompt | `gateway_auth_spec.lua::"prompts for an api key and saves it"` |
 | Mid-line request gate | `complete_spec.lua::"does not request completions in the middle of a line"` |
 | Multiline streaming | `complete_spec.lua::"keeps multiline streamed completions displayable"` |
 | Stream error notify | `complete_spec.lua::"notifies the user when a streamed completion fails"` |
+| Inflight dedup | `complete_spec.lua::"does not abort in-flight completion when TextChangedI leaves the prefix unchanged"` |
 | Module load smoke | `smoke_spec.lua::"loads all surviving zxz modules from runtimepath"` |
 | Cache exact hit | `cache_spec.lua::"returns exact cache hits"` |
 | Cache prefix-shift | `cache_spec.lua::"shifts a cached completion when the typed character matches"` |
 | Bounded context reads | `context_spec.lua::"reads bounded prefix lines on large buffers"` |
 | Unsaved buffer filepath | `context_spec.lua::"uses an untitled filepath for unnamed buffers"` |
-| ACP close capability gate | `acp_completion_spec.lua::"close_session skips agents that do not advertise close support"` |
+| Client stream lifecycle | `completion_client_spec.lua::"streams completion chunks and finishes cleanly"` |
+| Transport recycle | `completion_client_spec.lua::"recycles the singleton after transport disconnect"` |
 | Debug log levels | `log_spec.lua::"appends timestamped lines at each level"` |

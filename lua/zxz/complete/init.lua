@@ -1,10 +1,10 @@
 --- 0x0-completion: Inline ghost text code completions.
---- Dispatches to an ACP provider over stdio. Cursor is supported via
---- `cursor-agent acp`, not the one-shot CLI path.
+--- Dispatches to the bundled AI Gateway completion server over stdio.
 
 local config = require("zxz.core.config")
 local context = require("zxz.complete.context")
-local client = require("zxz.core.acp_client")
+local client = require("zxz.core.completion_client")
+local gateway_auth = require("zxz.core.gateway_auth")
 local ghost = require("zxz.complete.ghost")
 local debounce = require("zxz.complete.debounce")
 local cache = require("zxz.complete.cache")
@@ -149,18 +149,31 @@ local _visible_text = ""
 ---@type integer Active request generation; used to ignore late async chunks.
 local _request_id = 0
 
-local function resolve_provider()
-	local provider, err = config.resolve_completion_provider()
-	if not provider then
-		vim.notify("0x0 completion: " .. tostring(err or "provider not configured"), vim.log.levels.ERROR)
-		return nil, nil
+---@type { bufnr: integer, row: integer, col: integer, before: string }|nil
+local _inflight = nil
+
+local function clear_inflight()
+	_inflight = nil
+end
+
+local function inflight_matches(bufnr, before)
+	if not _abort_fn or not _inflight then
+		return false
 	end
-	local model = config.resolve_completion_model(provider, config.current.complete and config.current.complete.model)
+	return _inflight.bufnr == bufnr and _inflight.before == before
+end
+
+local function resolve_model()
+	if not config.gateway_ready() then
+		gateway_auth.ensure_auto()
+		return nil
+	end
+	local model = config.resolve_completion_model(nil, config.current.complete and config.current.complete.model)
 	if not model then
 		vim.notify("0x0 completion: no non-thinking model configured", vim.log.levels.ERROR)
-		return nil, nil
+		return nil
 	end
-	return provider, model
+	return model
 end
 
 local function visible_completion(text, before)
@@ -317,6 +330,11 @@ function M._on_text_changed()
 		end
 	end
 
+	if inflight_matches(bufnr, before) then
+		debug_log("skip: in-flight completion unchanged")
+		return
+	end
+
 	M._cancel()
 
 	-- Debounce the completion request
@@ -350,14 +368,13 @@ function M._request_completion()
 		return
 	end
 	local cwd = project_cwd()
-	local provider, model = resolve_provider()
-	if not provider then
-		debug_log("request aborted: provider resolution failed")
+	local model = resolve_model()
+	if not model then
+		debug_log("request aborted: model resolution failed")
 		return
 	end
 	debug_log(
-		("request start provider=%s model=%s file=%s line=%s col=%s prefix_chars=%d suffix_chars=%d scope=%s"):format(
-			tostring(provider.name or provider.command),
+		("request start model=%s file=%s line=%s col=%s prefix_chars=%d suffix_chars=%d scope=%s"):format(
 			tostring(model),
 			tostring(ctx.filepath),
 			tostring(ctx.cursor and ctx.cursor.line or "?"),
@@ -383,8 +400,14 @@ function M._request_completion()
 	_streaming_text = ""
 	_visible_text = ""
 	local first_chunk_logged = false
+	_inflight = {
+		bufnr = bufnr,
+		row = row,
+		col = col,
+		before = before,
+	}
 
-	_abort_fn = client.stream_completion(provider, {
+	_abort_fn = client.stream_completion(nil, {
 		prefix = ctx.prefix,
 		suffix = ctx.suffix,
 		language = ctx.language,
@@ -431,6 +454,7 @@ function M._request_completion()
 			return
 		end
 		_abort_fn = nil
+		clear_inflight()
 
 		if err then
 			local msg = format_err(err)
@@ -461,6 +485,7 @@ end
 function M._cancel()
 	debounce.stop()
 	_request_id = _request_id + 1
+	clear_inflight()
 	if _abort_fn then
 		_abort_fn()
 		_abort_fn = nil
@@ -494,6 +519,7 @@ end
 function M._cancel_request_only()
 	debounce.stop()
 	_request_id = _request_id + 1
+	clear_inflight()
 	if _abort_fn then
 		_abort_fn()
 		_abort_fn = nil
@@ -524,6 +550,17 @@ local function choose_model()
 	end)
 end
 
+local function api_key_label()
+	if gateway_auth.configured() then
+		return "API key: configured"
+	end
+	return "API key: not set"
+end
+
+local function choose_api_key()
+	gateway_auth.prompt()
+end
+
 function M.settings()
 	local actions = {
 		{
@@ -531,7 +568,11 @@ function M.settings()
 			run = M.toggle,
 		},
 		{
-			label = "Model: " .. tostring(config.current.complete.model or "provider default"),
+			label = api_key_label(),
+			run = choose_api_key,
+		},
+		{
+			label = "Model: " .. tostring(config.current.complete.model or "default"),
 			run = choose_model,
 		},
 	}

@@ -3,22 +3,12 @@ local log = require("zxz.core.log")
 
 local M = {}
 
-local function should_ignore_stderr(line, patterns)
-	for _, pattern in ipairs(patterns or {}) do
-		if line:match(pattern) then
-			return true
-		end
-	end
-	return false
-end
-
 local function build_env(overrides)
 	local env_map = {}
 	for k, v in pairs(vim.fn.environ()) do
 		env_map[k] = v
 	end
 	env_map.NODE_NO_WARNINGS = "1"
-	env_map.IS_AI_TERMINAL = "1"
 	if overrides then
 		for k, v in pairs(overrides) do
 			env_map[k] = v
@@ -31,7 +21,7 @@ local function build_env(overrides)
 	return list
 end
 
----@param config { command: string, args?: string[], env?: table<string, string>, ignore_stderr_patterns?: string[] }
+---@param config { command: string, args?: string[], env?: table<string, string> }
 ---@param callbacks { on_state: fun(state: string), on_message: fun(msg: table), on_exit?: fun(code: integer, stderr: string[]), on_idle?: fun(ms: integer) }
 ---@param opts? { idle_kill_ms?: integer }
 function M.create(config, callbacks, opts)
@@ -67,8 +57,8 @@ function M.create(config, callbacks, opts)
 			0,
 			vim.schedule_wrap(function()
 				log.warn(
-					("acp[%s]: no I/O for %d ms — killing subprocess"):format(
-						config.name or config.command,
+					("completion-server[%s]: no I/O for %d ms — killing subprocess"):format(
+						config.command,
 						idle_kill_ms
 					)
 				)
@@ -109,12 +99,11 @@ function M.create(config, callbacks, opts)
 		local stderr = uv.new_pipe(false)
 		if not stdin or not stdout or not stderr then
 			callbacks.on_state("error")
-			error("acp: failed to create pipes")
+			error("completion-server: failed to create pipes")
 		end
 
 		local stderr_buffer = {}
 		local args = vim.deepcopy(config.args or {})
-		local stderr_patterns = config.ignore_stderr_patterns
 
 		local ok, handle, pid_or_err = pcall(uv.spawn, config.command, {
 			args = args,
@@ -141,10 +130,12 @@ function M.create(config, callbacks, opts)
 			stdout:close()
 			stderr:close()
 			callbacks.on_state("error")
-			log.error(("acp: spawn failed for '%s': %s"):format(config.command, tostring(handle or pid_or_err)))
+			log.error(
+				("completion-server: spawn failed for '%s': %s"):format(config.command, tostring(handle or pid_or_err))
+			)
 			vim.schedule(function()
 				vim.notify(
-					("acp: failed to spawn '%s': %s"):format(config.command, tostring(handle or pid_or_err)),
+					("0x0 completion: failed to spawn '%s': %s"):format(config.command, tostring(handle or pid_or_err)),
 					vim.log.levels.ERROR
 				)
 			end)
@@ -161,14 +152,12 @@ function M.create(config, callbacks, opts)
 		local buffered = ""
 		stdout:read_start(function(err, data)
 			if err then
-				log.error("acp stdout error: " .. err)
-				vim.schedule(function()
-					vim.notify("acp stdout error: " .. err, vim.log.levels.ERROR)
-				end)
+				log.error("completion-server stdout error: " .. err)
 				callbacks.on_state("error")
 				return
 			end
 			if not data then
+				callbacks.on_state("disconnected")
 				return
 			end
 			bump_idle()
@@ -182,10 +171,7 @@ function M.create(config, callbacks, opts)
 					if decode_ok then
 						callbacks.on_message(message)
 					else
-						log.warn("acp: failed to decode JSON line: " .. line)
-						vim.schedule(function()
-							vim.notify("acp: failed to decode JSON line: " .. line, vim.log.levels.WARN)
-						end)
+						log.warn("completion-server: failed to decode JSON line: " .. line)
 					end
 				end
 			end
@@ -201,12 +187,7 @@ function M.create(config, callbacks, opts)
 				return
 			end
 			stderr_buffer[#stderr_buffer + 1] = trimmed
-			log.debug("acp stderr: " .. trimmed)
-			if not should_ignore_stderr(data, stderr_patterns) then
-				vim.schedule(function()
-					vim.notify("acp stderr: " .. trimmed, vim.log.levels.DEBUG)
-				end)
-			end
+			log.debug("completion-server stderr: " .. trimmed)
 		end)
 	end
 

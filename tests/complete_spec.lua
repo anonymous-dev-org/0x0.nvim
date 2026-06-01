@@ -6,6 +6,7 @@ describe("inline completion", function()
 		config.setup({
 			complete = {
 				cache = { enabled = false },
+				gateway = { api_key = "test-key" },
 			},
 		})
 		package.loaded["zxz.complete"] = nil
@@ -78,10 +79,10 @@ describe("inline completion", function()
 	end)
 
 	it("does not request completions for nofile buffers", function()
-		local acp_client = require("zxz.core.acp_client")
-		local original = acp_client.stream_completion
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
 		local called = false
-		acp_client.stream_completion = function()
+		completion_client.stream_completion = function()
 			called = true
 			return function() end
 		end
@@ -94,16 +95,16 @@ describe("inline completion", function()
 
 		complete._on_text_changed()
 
-		acp_client.stream_completion = original
+		completion_client.stream_completion = original
 		assert.is_false(called)
 	end)
 
-	it("uses the resolved provider and drops repeated prefix text", function()
-		local acp_client = require("zxz.core.acp_client")
-		local original = acp_client.stream_completion
+	it("uses the resolved model and drops repeated prefix text", function()
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
 		local captured
-		acp_client.stream_completion = function(provider, request, on_chunk, on_done)
-			captured = { provider = provider, request = request }
+		completion_client.stream_completion = function(_provider, request, on_chunk, on_done)
+			captured = { request = request }
 			on_chunk((request.prefix or "") .. "42" .. string.char(14))
 			on_done()
 			return function() end
@@ -124,29 +125,29 @@ describe("inline completion", function()
 
 		complete._request_completion()
 
-		acp_client.stream_completion = original
+		completion_client.stream_completion = original
 
 		assert.is_truthy(captured)
-		assert.are.equal("codex-acp", captured.provider.command)
-		assert.are.equal("gpt-5.3-codex", captured.request.model)
+		assert.are.equal("mistral/codestral", captured.request.model)
 		assert.are.equal(vim.fn.getcwd(), captured.request.cwd)
 		assert.are.equal("42", ghost.get_text())
 	end)
 
-	it("routes the selected model to its ACP provider", function()
+	it("routes the selected gateway model", function()
 		config.setup({
 			complete = {
 				cache = { enabled = false },
-				model = "composer-2.5",
+				gateway = { api_key = "test-key" },
+				model = "anthropic/claude-sonnet-4.6",
 			},
 		})
 		package.loaded["zxz.complete"] = nil
 
-		local acp_client = require("zxz.core.acp_client")
-		local original = acp_client.stream_completion
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
 		local captured
-		acp_client.stream_completion = function(provider, request, on_chunk, on_done)
-			captured = { provider = provider, request = request }
+		completion_client.stream_completion = function(_provider, request, on_chunk, on_done)
+			captured = { request = request }
 			on_chunk("42")
 			on_done()
 			return function() end
@@ -156,7 +157,7 @@ describe("inline completion", function()
 		local bufnr = vim.api.nvim_create_buf(false, true)
 		vim.api.nvim_set_current_buf(bufnr)
 		vim.bo[bufnr].filetype = "lua"
-		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-cursor-acp.lua")
+		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-gateway-model.lua")
 		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
 		vim.wo.virtualedit = "onemore"
 		vim.api.nvim_win_set_cursor(0, { 1, 14 })
@@ -166,53 +167,10 @@ describe("inline completion", function()
 
 		complete._request_completion()
 
-		acp_client.stream_completion = original
+		completion_client.stream_completion = original
 
 		assert.is_truthy(captured)
-		assert.are.equal("cursor-agent", captured.provider.command)
-		assert.are.same({ "acp" }, captured.provider.args)
-		assert.are.equal("composer-2.5", captured.request.model)
-	end)
-
-	it("routes the fast Cursor composer model to its ACP provider", function()
-		config.setup({
-			complete = {
-				cache = { enabled = false },
-				model = "composer-2.5-fast",
-			},
-		})
-		package.loaded["zxz.complete"] = nil
-
-		local acp_client = require("zxz.core.acp_client")
-		local original = acp_client.stream_completion
-		local captured
-		acp_client.stream_completion = function(provider, request, on_chunk, on_done)
-			captured = { provider = provider, request = request }
-			on_chunk("42")
-			on_done()
-			return function() end
-		end
-
-		local complete = require("zxz.complete")
-		local bufnr = vim.api.nvim_create_buf(false, true)
-		vim.api.nvim_set_current_buf(bufnr)
-		vim.bo[bufnr].filetype = "lua"
-		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-cursor-fast-acp.lua")
-		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
-		vim.wo.virtualedit = "onemore"
-		vim.api.nvim_win_set_cursor(0, { 1, 14 })
-		complete._mode = function()
-			return "i"
-		end
-
-		complete._request_completion()
-
-		acp_client.stream_completion = original
-
-		assert.is_truthy(captured)
-		assert.are.equal("cursor-agent", captured.provider.command)
-		assert.are.same({ "acp" }, captured.provider.args)
-		assert.are.equal("composer-2.5-fast", captured.request.model)
+		assert.are.equal("anthropic/claude-sonnet-4.6", captured.request.model)
 	end)
 
 	it("filters thinking models from completion choices", function()
@@ -226,9 +184,9 @@ describe("inline completion", function()
 	end)
 
 	it("does not render thinking preambles as ghost text", function()
-		local acp_client = require("zxz.core.acp_client")
-		local original = acp_client.stream_completion
-		acp_client.stream_completion = function(provider, request, on_chunk, on_done)
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
+		completion_client.stream_completion = function(provider, request, on_chunk, on_done)
 			on_chunk("Let me think about this")
 			on_done()
 			return function() end
@@ -249,15 +207,15 @@ describe("inline completion", function()
 
 		complete._request_completion()
 
-		acp_client.stream_completion = original
+		completion_client.stream_completion = original
 
 		assert.is_nil(ghost.get_text())
 	end)
 
 	it("unwraps tagged completions before rendering", function()
-		local acp_client = require("zxz.core.acp_client")
-		local original = acp_client.stream_completion
-		acp_client.stream_completion = function(provider, request, on_chunk, on_done)
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
+		completion_client.stream_completion = function(provider, request, on_chunk, on_done)
 			on_chunk("<completion>\n42\n</completion>")
 			on_done()
 			return function() end
@@ -278,15 +236,15 @@ describe("inline completion", function()
 
 		complete._request_completion()
 
-		acp_client.stream_completion = original
+		completion_client.stream_completion = original
 
 		assert.are.equal("42", ghost.get_text())
 	end)
 
 	it("does not render obvious agent chatter as ghost text", function()
-		local acp_client = require("zxz.core.acp_client")
-		local original = acp_client.stream_completion
-		acp_client.stream_completion = function(provider, request, on_chunk, on_done)
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
+		completion_client.stream_completion = function(provider, request, on_chunk, on_done)
 			on_chunk("Checking the repo for context before answering.")
 			on_done()
 			return function() end
@@ -307,26 +265,27 @@ describe("inline completion", function()
 
 		complete._request_completion()
 
-		acp_client.stream_completion = original
+		completion_client.stream_completion = original
 
 		assert.is_nil(ghost.get_text())
 	end)
 
-	it("falls back from thinking model names before routing", function()
+	it("falls back from thinking model names before requesting", function()
 		config.setup({
 			complete = {
 				cache = { enabled = false },
-				model = "composer-2.5-thinking",
-				models = { "composer-2.5-thinking", "composer-2.5" },
+				gateway = { api_key = "test-key" },
+				model = "anthropic/claude-sonnet-4.6-thinking",
+				models = { "anthropic/claude-sonnet-4.6-thinking", "anthropic/claude-sonnet-4.6" },
 			},
 		})
 		package.loaded["zxz.complete"] = nil
 
-		local acp_client = require("zxz.core.acp_client")
-		local original = acp_client.stream_completion
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
 		local captured
-		acp_client.stream_completion = function(provider, request, on_chunk, on_done)
-			captured = { provider = provider, request = request }
+		completion_client.stream_completion = function(_provider, request, on_chunk, on_done)
+			captured = { request = request }
 			on_chunk("42")
 			on_done()
 			return function() end
@@ -346,11 +305,10 @@ describe("inline completion", function()
 
 		complete._request_completion()
 
-		acp_client.stream_completion = original
+		completion_client.stream_completion = original
 
 		assert.is_truthy(captured)
-		assert.are.equal("cursor-agent", captured.provider.command)
-		assert.are.equal("composer-2.5", captured.request.model)
+		assert.are.equal("anthropic/claude-sonnet-4.6", captured.request.model)
 	end)
 
 	it("settings exposes only completion toggle and model selection", function()
@@ -365,30 +323,30 @@ describe("inline completion", function()
 
 		vim.ui.select = original_select
 
-		assert.are.equal(2, #captured)
+		assert.are.equal(3, #captured)
 		assert.is_truthy(captured[1].label:match("^Enabled:"))
-		assert.is_truthy(captured[2].label:match("^Model:"))
+		assert.is_truthy(captured[2].label:match("^API key:"))
+		assert.is_truthy(captured[3].label:match("^Model:"))
 	end)
 
-	it("model choices expose model names without provider names", function()
+	it("model choices expose gateway model ids", function()
 		local choices = config.completion_model_choices()
 		local seen = {}
 		for _, choice in ipairs(choices) do
 			seen[choice] = true
-			assert.is_nil(choice:match("%-acp$"))
+			assert.is_truthy(choice:match("/"))
 		end
 
-		assert.is_true(seen["gpt-5.3-codex"])
-		assert.is_true(seen["claude-opus-4-8"])
-		assert.is_true(seen["gemini-3.5-flash"])
-		assert.is_true(seen["composer-2.5"])
+		assert.is_true(seen["mistral/codestral"])
+		assert.is_true(seen["anthropic/claude-sonnet-4.6"])
+		assert.is_true(seen["openai/gpt-5.4-mini"])
 	end)
 
 	it("does not request completions in the middle of a line", function()
-		local acp_client = require("zxz.core.acp_client")
-		local original = acp_client.stream_completion
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
 		local called = false
-		acp_client.stream_completion = function()
+		completion_client.stream_completion = function()
 			called = true
 			return function() end
 		end
@@ -406,15 +364,15 @@ describe("inline completion", function()
 
 		complete._request_completion()
 
-		acp_client.stream_completion = original
+		completion_client.stream_completion = original
 
 		assert.is_false(called)
 	end)
 
 	it("keeps multiline streamed completions displayable", function()
-		local acp_client = require("zxz.core.acp_client")
-		local original = acp_client.stream_completion
-		acp_client.stream_completion = function(provider, request, on_chunk, on_done)
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
+		completion_client.stream_completion = function(provider, request, on_chunk, on_done)
 			on_chunk((request.prefix or "") .. "function()\n  return 42\nend")
 			on_done()
 			return function() end
@@ -435,15 +393,15 @@ describe("inline completion", function()
 
 		complete._request_completion()
 
-		acp_client.stream_completion = original
+		completion_client.stream_completion = original
 
 		assert.are.equal("function()\n  return 42\nend", ghost.get_text())
 	end)
 
 	it("notifies the user when a streamed completion fails", function()
-		local acp_client = require("zxz.core.acp_client")
-		local original = acp_client.stream_completion
-		acp_client.stream_completion = function(provider, request, on_chunk, on_done)
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
+		completion_client.stream_completion = function(provider, request, on_chunk, on_done)
 			on_done({ code = -32000, message = "model not supported on this plan" })
 			return function() end
 		end
@@ -471,7 +429,7 @@ describe("inline completion", function()
 			return #notifications > 0
 		end)
 
-		acp_client.stream_completion = original
+		completion_client.stream_completion = original
 		vim.notify = original_notify
 
 		local saw_error = false
@@ -486,5 +444,67 @@ describe("inline completion", function()
 			end
 		end
 		assert.is_true(saw_error)
+	end)
+
+	it("does not abort in-flight completion when TextChangedI leaves the prefix unchanged", function()
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
+		local abort_count = 0
+		completion_client.stream_completion = function(_, _, _, _)
+			return function()
+				abort_count = abort_count + 1
+			end
+		end
+
+		local complete = require("zxz.complete")
+		local bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_set_current_buf(bufnr)
+		vim.bo[bufnr].filetype = "lua"
+		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-inflight.lua")
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
+		vim.wo.virtualedit = "onemore"
+		vim.api.nvim_win_set_cursor(0, { 1, 14 })
+		complete._mode = function()
+			return "i"
+		end
+
+		complete._request_completion()
+		assert.are.equal(0, abort_count)
+
+		complete._on_text_changed()
+
+		assert.are.equal(0, abort_count)
+
+		completion_client.stream_completion = original
+	end)
+
+	it("aborts in-flight completion when the typed prefix changes", function()
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
+		local abort_count = 0
+		completion_client.stream_completion = function(_, _, _, _)
+			return function()
+				abort_count = abort_count + 1
+			end
+		end
+
+		local complete = require("zxz.complete")
+		local bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_set_current_buf(bufnr)
+		vim.bo[bufnr].filetype = "lua"
+		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-inflight-changed.lua")
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
+		vim.wo.virtualedit = "onemore"
+		vim.api.nvim_win_set_cursor(0, { 1, 14 })
+		complete._mode = function()
+			return "i"
+		end
+
+		complete._request_completion()
+		complete._cancel()
+
+		assert.are.equal(1, abort_count)
+
+		completion_client.stream_completion = original
 	end)
 end)

@@ -15,6 +15,24 @@ function M.log_path()
 	return join(M.state_dir(), "debug.log")
 end
 
+function M.plugin_root()
+	for _, path in ipairs(vim.api.nvim_list_runtime_paths()) do
+		local server = join(path, "server", "dist", "completion-server.js")
+		if vim.fn.filereadable(server) == 1 then
+			return path
+		end
+	end
+	return join(vim.fn.stdpath("data"), "0x0")
+end
+
+function M.gateway_key_path()
+	return join(M.state_dir(), "gateway.json")
+end
+
+function M.completion_server()
+	return join(M.plugin_root(), "server", "dist", "completion-server.js")
+end
+
 local _migrated = false
 
 function M.migrate_legacy()
