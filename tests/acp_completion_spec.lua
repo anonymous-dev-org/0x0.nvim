@@ -14,6 +14,8 @@ describe("acp inline completion lifecycle", function()
 			unsubscribe = {},
 			prompt_blocks = {},
 			prompt_opts = {},
+			prompt_session_ids = {},
+			new_session = 0,
 		}
 
 		local client
@@ -36,8 +38,13 @@ describe("acp inline completion lifecycle", function()
 				local id = self.id_counter
 				self.callbacks[id] = { cb = callback, method = method, opts = opts }
 				if method == "session/new" then
+					calls.new_session = calls.new_session + 1
+					local result = overrides.new_session_result or { sessionId = "sess-test", configOptions = {} }
+					if type(overrides.new_session_results) == "table" then
+						result = overrides.new_session_results[calls.new_session] or result
+					end
 					vim.schedule(function()
-						callback(overrides.new_session_result or { sessionId = "sess-test" }, nil)
+						callback(result, nil)
 					end)
 				end
 				return id
@@ -46,6 +53,7 @@ describe("acp inline completion lifecycle", function()
 				return self:request("session/new", { cwd = cwd }, callback)
 			end,
 			prompt = function(self, session_id, blocks, callback, opts)
+				calls.prompt_session_ids[#calls.prompt_session_ids + 1] = session_id
 				calls.prompt_blocks[#calls.prompt_blocks + 1] = blocks
 				calls.prompt_opts[#calls.prompt_opts + 1] = opts
 				if overrides.prompt_hangs then
@@ -113,6 +121,7 @@ describe("acp inline completion lifecycle", function()
 			request_timeout_ms = 0,
 			complete = {
 				prompt_timeout_ms = 50,
+				session_reuse = { enabled = false },
 			},
 		})
 		package.loaded["zxz.core.acp_client"] = nil
@@ -156,9 +165,11 @@ describe("acp inline completion lifecycle", function()
 			set_idle_armed = function() end,
 			send = function(_, data)
 				sends[#sends + 1] = vim.json.decode(data)
+				return true
 			end,
 		}
 		client.agent_capabilities = { sessionCapabilities = { close = {} } }
+		client.state = "ready"
 
 		local request_id = client:close_session("sess-1")
 
@@ -166,6 +177,30 @@ describe("acp inline completion lifecycle", function()
 		assert.are.equal("session/close", sends[1].method)
 		assert.are.equal(1, sends[1].id)
 		assert.are.equal("sess-1", sends[1].params.sessionId)
+	end)
+
+	it("close_session skips disconnected clients", function()
+		local sends = {}
+		local client = acp_client.new({ command = "fake", name = "fake" })
+		client.transport = {
+			set_idle_armed = function() end,
+			send = function(_, data)
+				sends[#sends + 1] = vim.json.decode(data)
+				return true
+			end,
+		}
+		client.agent_capabilities = { sessionCapabilities = { close = {} } }
+		client.state = "disconnected"
+
+		local callback_called = false
+		client:close_session("sess-1", function(_, err)
+			callback_called = err == nil
+		end)
+
+		assert.are.equal(0, #sends)
+		assert.is_true(vim.wait(500, function()
+			return callback_called
+		end))
 	end)
 
 	it("finish closes the session after a successful prompt when advertised", function()
@@ -331,6 +366,87 @@ describe("acp inline completion lifecycle", function()
 		assert.are.equal(1, #calls.prompt_opts)
 	end)
 
+	it("sets advertised effort, temperature, and max token options before prompting", function()
+		local fake_client, calls = make_fake_client({
+			new_session_result = {
+				sessionId = "sess-test",
+				configOptions = {
+					{
+						id = "model",
+						name = "Model",
+						category = "model",
+						type = "select",
+						currentValue = "fast",
+						options = {
+							{ value = "fast", name = "Fast" },
+							{ value = "sonnet", name = "Claude Sonnet" },
+						},
+					},
+					{
+						id = "thought",
+						name = "Thought Level",
+						category = "thought_level",
+						type = "select",
+						currentValue = "medium",
+						options = {
+							{ value = "medium", name = "Medium" },
+							{ value = "none", name = "None" },
+						},
+					},
+					{
+						id = "temperature",
+						name = "Temperature",
+						type = "select",
+						currentValue = "1",
+						options = {
+							{ value = "1", name = "One" },
+							{ value = "0", name = "Zero" },
+						},
+					},
+					{
+						id = "max_output_tokens",
+						name = "Max output tokens",
+						type = "select",
+						currentValue = "512",
+						options = {
+							{ value = "64", name = "64" },
+							{ value = "128", name = "128" },
+							{ value = "256", name = "256" },
+						},
+					},
+				},
+			},
+		})
+		acp_client._set_client_factory(function()
+			return fake_client
+		end)
+
+		local done_err = "pending"
+		local abort = acp_client.stream_completion({ command = "fake" }, {
+			prefix = "local x = ",
+			suffix = "",
+			cwd = "/tmp",
+			model = "Claude Sonnet",
+		}, function() end, function(err)
+			done_err = err
+		end)
+
+		assert.is_true(vim.wait(500, function()
+			return done_err ~= "pending"
+		end))
+		abort()
+
+		assert.is_nil(done_err)
+		assert.are.same({ session_id = "sess-test", config_id = "model", value = "sonnet" }, calls.set_config[1])
+		assert.are.same({ session_id = "sess-test", config_id = "thought", value = "none" }, calls.set_config[2])
+		assert.are.same({ session_id = "sess-test", config_id = "temperature", value = "0" }, calls.set_config[3])
+		assert.are.same(
+			{ session_id = "sess-test", config_id = "max_output_tokens", value = "128" },
+			calls.set_config[4]
+		)
+		assert.are.equal(1, #calls.prompt_opts)
+	end)
+
 	it("fails before prompting when the requested model is not advertised", function()
 		local fake_client, calls = make_fake_client({
 			new_session_result = {
@@ -374,7 +490,7 @@ describe("acp inline completion lifecycle", function()
 		assert.are.same({ "fast" }, done_err.data.availableModels)
 	end)
 
-	it("prompts for tagged insert-only completion with focused scope", function()
+	it("prompts for raw insert-only completion with focused scope", function()
 		local fake_client, calls = make_fake_client()
 		acp_client._set_client_factory(function()
 			return fake_client
@@ -405,12 +521,13 @@ describe("acp inline completion lifecycle", function()
 
 		assert.is_nil(done_err)
 		local prompt = calls.prompt_blocks[1][1].text
-		assert.is_truthy(prompt:find("Do not inspect the repository", 1, true))
-		assert.is_truthy(prompt:find("<completion>RAW_TEXT_TO_INSERT</completion>", 1, true))
-		assert.is_truthy(prompt:find("<focused_scope", 1, true))
+		assert.is_truthy(prompt:find("Return only the lua text to insert after this cursor.", 1, true))
+		assert.is_truthy(prompt:find("No tools. No search. No explanation. No markdown.", 1, true))
+		assert.is_truthy(prompt:find("Relevant surrounding code", 1, true))
 		assert.is_truthy(prompt:find("function_declaration", 1, true))
-		assert.is_truthy(prompt:find("<prefix>\nlocal value = ", 1, true))
-		assert.is_truthy(prompt:find("<suffix>\n\nprint(value)", 1, true))
+		assert.is_truthy(prompt:find("Code before cursor: local value = ", 1, true))
+		assert.is_truthy(prompt:find("Code after cursor: \nprint(value)", 1, true))
+		assert.is_truthy(prompt:find("Text to insert:", 1, true))
 	end)
 
 	it("does not install permission handlers for completion sessions", function()
@@ -454,7 +571,7 @@ describe("acp inline completion lifecycle", function()
 		assert.are.same({ timeout_ms = 50 }, calls.prompt_opts[1])
 	end)
 
-	it("uses a fail-fast default timeout for session/prompt requests", function()
+	it("uses a bounded default timeout for session/prompt requests", function()
 		config.setup({})
 		local fake_client, calls = make_fake_client()
 		acp_client._set_client_factory(function()
@@ -472,7 +589,214 @@ describe("acp inline completion lifecycle", function()
 		end))
 		abort()
 
-		assert.are.same({ timeout_ms = 3000 }, calls.prompt_opts[1])
+		assert.are.same({ timeout_ms = 10000 }, calls.prompt_opts[1])
+	end)
+
+	it("reuses a completion session within the configured budget", function()
+		config.setup({
+			request_timeout_ms = 0,
+			complete = {
+				prompt_timeout_ms = 50,
+				session_reuse = {
+					enabled = true,
+					max_prompts = 3,
+					max_age_ms = 30000,
+					max_idle_ms = 30000,
+				},
+			},
+		})
+		local fake_client, calls = make_fake_client({
+			new_session_results = {
+				{ sessionId = "sess-1", configOptions = {} },
+			},
+		})
+		acp_client._set_client_factory(function()
+			return fake_client
+		end)
+
+		local done_err = "pending"
+		local abort = acp_client.stream_completion({ command = "fake" }, {
+			prefix = "local x = ",
+			suffix = "",
+			cwd = "/tmp",
+			model = "fast",
+		}, function() end, function(err)
+			done_err = err
+		end)
+		assert.is_true(vim.wait(500, function()
+			return done_err ~= "pending"
+		end))
+		abort()
+
+		done_err = "pending"
+		abort = acp_client.stream_completion({ command = "fake" }, {
+			prefix = "local y = ",
+			suffix = "",
+			cwd = "/tmp",
+			model = "fast",
+		}, function() end, function(err)
+			done_err = err
+		end)
+		assert.is_true(vim.wait(500, function()
+			return done_err ~= "pending"
+		end))
+		abort()
+
+		assert.is_nil(done_err)
+		assert.are.equal(1, calls.new_session)
+		assert.are.same({ "sess-1", "sess-1" }, calls.prompt_session_ids)
+		assert.are.equal(0, #calls.close)
+	end)
+
+	it("rotates cached completion sessions after the prompt budget", function()
+		config.setup({
+			request_timeout_ms = 0,
+			complete = {
+				prompt_timeout_ms = 50,
+				session_reuse = {
+					enabled = true,
+					max_prompts = 1,
+					max_age_ms = 30000,
+					max_idle_ms = 30000,
+				},
+			},
+		})
+		local fake_client, calls = make_fake_client({
+			new_session_results = {
+				{ sessionId = "sess-1", configOptions = {} },
+				{ sessionId = "sess-2", configOptions = {} },
+			},
+		})
+		acp_client._set_client_factory(function()
+			return fake_client
+		end)
+
+		local done_err = "pending"
+		local abort = acp_client.stream_completion({ command = "fake" }, {
+			prefix = "local x = ",
+			suffix = "",
+			cwd = "/tmp",
+			model = "fast",
+		}, function() end, function(err)
+			done_err = err
+		end)
+		assert.is_true(vim.wait(500, function()
+			return done_err ~= "pending"
+		end))
+		abort()
+
+		done_err = "pending"
+		abort = acp_client.stream_completion({ command = "fake" }, {
+			prefix = "local y = ",
+			suffix = "",
+			cwd = "/tmp",
+			model = "fast",
+		}, function() end, function(err)
+			done_err = err
+		end)
+		assert.is_true(vim.wait(500, function()
+			return done_err ~= "pending"
+		end))
+		abort()
+
+		assert.is_nil(done_err)
+		assert.are.equal(2, calls.new_session)
+		assert.are.same({ "sess-1", "sess-2" }, calls.prompt_session_ids)
+		assert.are.equal("sess-1", calls.close[1])
+	end)
+
+	it("uses the longer default session reuse budget", function()
+		config.setup({
+			request_timeout_ms = 0,
+			complete = {
+				prompt_timeout_ms = 50,
+			},
+		})
+		local fake_client, calls = make_fake_client({
+			new_session_results = {
+				{ sessionId = "sess-1", configOptions = {} },
+				{ sessionId = "sess-2", configOptions = {} },
+			},
+		})
+		acp_client._set_client_factory(function()
+			return fake_client
+		end)
+
+		for i = 1, 13 do
+			local done_err = "pending"
+			local abort = acp_client.stream_completion({ command = "fake" }, {
+				prefix = "local value" .. tostring(i) .. " = ",
+				suffix = "",
+				cwd = "/tmp",
+				model = "fast",
+			}, function() end, function(err)
+				done_err = err
+			end)
+			assert.is_true(vim.wait(500, function()
+				return done_err ~= "pending"
+			end))
+			abort()
+			assert.is_nil(done_err)
+		end
+
+		assert.are.equal(2, calls.new_session)
+		for i = 1, 12 do
+			assert.are.equal("sess-1", calls.prompt_session_ids[i])
+		end
+		assert.are.equal("sess-2", calls.prompt_session_ids[13])
+		assert.are.equal("sess-1", calls.close[1])
+	end)
+
+	it("does not discard the provider client when a cached session is still cancelling", function()
+		config.setup({
+			request_timeout_ms = 0,
+			complete = {
+				prompt_timeout_ms = 50,
+				session_reuse = {
+					enabled = true,
+					max_prompts = 3,
+					max_age_ms = 30000,
+					max_idle_ms = 30000,
+				},
+			},
+		})
+		local fake_client, calls = make_fake_client({
+			prompt_hangs = true,
+			supports_close = false,
+			new_session_results = {
+				{ sessionId = "sess-1", configOptions = {} },
+				{ sessionId = "sess-2", configOptions = {} },
+			},
+		})
+		acp_client._set_client_factory(function()
+			return fake_client
+		end)
+
+		local abort = acp_client.stream_completion({ command = "fake" }, {
+			prefix = "local x = ",
+			suffix = "",
+			cwd = "/tmp",
+			model = "fast",
+		}, function() end, function() end)
+		assert.is_true(vim.wait(500, function()
+			return #calls.prompt_opts == 1
+		end))
+		abort()
+
+		abort = acp_client.stream_completion({ command = "fake" }, {
+			prefix = "local y = ",
+			suffix = "",
+			cwd = "/tmp",
+			model = "fast",
+		}, function() end, function() end)
+		assert.is_true(vim.wait(500, function()
+			return #calls.prompt_opts == 2
+		end))
+		abort()
+
+		assert.are.equal(2, calls.new_session)
+		assert.are.same({ "sess-1", "sess-2" }, calls.prompt_session_ids)
+		assert.are.equal(0, calls.stop)
 	end)
 
 	it("recycles the singleton client after a prompt timeout", function()
@@ -528,6 +852,75 @@ describe("acp inline completion lifecycle", function()
 		assert.are.equal(1, #second_calls.prompt_opts)
 	end)
 
+	it("fails stream completion immediately when session/prompt cannot be sent", function()
+		config.setup({
+			request_timeout_ms = 0,
+			complete = {
+				prompt_timeout_ms = 5000,
+			},
+		})
+
+		local sent_methods = {}
+		local unsubscribed
+		local stopped = 0
+		local fake_client = acp_client.new({ command = "fake-disconnected", name = "fake" })
+		fake_client.state = "ready"
+		fake_client.agent_capabilities = { sessionCapabilities = { close = {} } }
+		fake_client.transport = {
+			set_idle_armed = function() end,
+			send = function(_, data)
+				local message = vim.json.decode(data)
+				sent_methods[#sent_methods + 1] = message.method
+				return message.method ~= "session/prompt"
+			end,
+			stop = function()
+				stopped = stopped + 1
+				fake_client.state = "disconnected"
+			end,
+		}
+		fake_client.start = function(self, on_ready)
+			vim.schedule(function()
+				on_ready(self)
+			end)
+		end
+		fake_client.new_session = function(_, _, callback)
+			vim.schedule(function()
+				callback({ sessionId = "sess-dead", configOptions = {} }, nil)
+			end)
+			return 1
+		end
+		fake_client.unsubscribe = function(_, sid)
+			unsubscribed = sid
+		end
+
+		acp_client._set_client_factory(function()
+			return fake_client
+		end)
+
+		local done_err = "pending"
+		local started = vim.uv.hrtime()
+		local abort = acp_client.stream_completion({ command = "fake-disconnected" }, {
+			prefix = "local x = ",
+			suffix = "",
+			cwd = "/tmp",
+		}, function() end, function(err)
+			done_err = err
+		end)
+
+		assert.is_true(vim.wait(500, function()
+			return done_err ~= "pending"
+		end))
+		abort()
+
+		local elapsed_ms = math.floor((vim.uv.hrtime() - started) / 1000000)
+		assert.is_true(elapsed_ms < 1000)
+		assert.are.equal(-32000, done_err.code)
+		assert.are.equal("session/prompt", done_err.data.method)
+		assert.are.same({ "session/prompt" }, sent_methods)
+		assert.are.equal("sess-dead", unsubscribed)
+		assert.are.equal(1, stopped)
+	end)
+
 	it("times out hung session/prompt requests", function()
 		config.setup({
 			complete = {
@@ -536,7 +929,13 @@ describe("acp inline completion lifecycle", function()
 		})
 
 		local client = acp_client.new({ command = "fake-timeout", name = "fake" })
-		client.transport = { set_idle_armed = function() end, send = function() end }
+		client.state = "ready"
+		client.transport = {
+			set_idle_armed = function() end,
+			send = function()
+				return true
+			end,
+		}
 
 		local timed_out = false
 		client:request("session/prompt", { sessionId = "sess-timeout", prompt = {} }, function(_, err)
@@ -546,5 +945,36 @@ describe("acp inline completion lifecycle", function()
 		assert.is_true(vim.wait(500, function()
 			return timed_out
 		end))
+	end)
+
+	it("fails immediately when a request cannot be sent", function()
+		local client = acp_client.new({ command = "fake-disconnected", name = "fake" })
+		local idle_armed = false
+		client.state = "disconnected"
+		client.transport = {
+			set_idle_armed = function(_, armed)
+				idle_armed = armed
+			end,
+			send = function()
+				return false
+			end,
+		}
+
+		local err_result
+		local calls = 0
+		local request_id = client:request("session/prompt", { sessionId = "sess-dead", prompt = {} }, function(_, err)
+			calls = calls + 1
+			err_result = err
+		end, { timeout_ms = 50 })
+
+		assert.are.equal(1, request_id)
+		assert.is_nil(client.callbacks[request_id])
+		assert.is_false(idle_armed)
+		assert.is_true(vim.wait(500, function()
+			return err_result ~= nil
+		end))
+		assert.are.equal(1, calls)
+		assert.are.equal(-32000, err_result.code)
+		assert.are.equal("session/prompt", err_result.data.method)
 	end)
 end)

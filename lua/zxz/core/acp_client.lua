@@ -365,6 +365,21 @@ function Client:request(method, params, callback, opts)
 	if sent then
 		acp_debug(self.provider, "request sent method=%s id=%d bytes=%d", tostring(method), id, #data)
 	else
+		self.callbacks[id] = nil
+		if entry.timer then
+			pcall(function()
+				entry.timer:stop()
+				entry.timer:close()
+			end)
+		end
+		if not next(self.callbacks) and self.transport and self.transport.set_idle_armed then
+			self.transport:set_idle_armed(false)
+		end
+		local err = {
+			code = -32000,
+			message = "transport " .. tostring(self.state or "disconnected"),
+			data = { method = method },
+		}
 		log.warn(
 			("acp[%s]: failed to send request '%s' (id=%d); transport state=%s"):format(
 				provider_label(self.provider),
@@ -373,6 +388,9 @@ function Client:request(method, params, callback, opts)
 				tostring(self.state)
 			)
 		)
+		vim.schedule(function()
+			pcall(callback, nil, err)
+		end)
 	end
 	return id
 end
@@ -784,6 +802,20 @@ function Client:close_session(session_id, callback)
 		end
 		return
 	end
+	if self.state == "disconnected" or self.state == "error" then
+		acp_debug(
+			self.provider,
+			"session/close skipped session=%s reason=transport_%s",
+			tostring(session_id),
+			tostring(self.state)
+		)
+		if callback then
+			vim.schedule(function()
+				callback(nil, nil)
+			end)
+		end
+		return
+	end
 	acp_debug(self.provider, "session/close start session=%s", tostring(session_id))
 	return self:request("session/close", { sessionId = session_id }, function(result, err)
 		if err then
@@ -857,7 +889,108 @@ local function _completion_key(provider)
 	return tostring(provider.command) .. "\0" .. table.concat(provider.args or {}, "\1")
 end
 
-local function _discard_completion_client(provider, client, reason)
+local function _completion_session_reuse_config(complete_cfg)
+	local raw = type(complete_cfg) == "table" and complete_cfg.session_reuse or nil
+	if raw == false then
+		return { enabled = false }
+	end
+	if raw == true or raw == nil then
+		raw = {}
+	end
+	if type(raw) ~= "table" then
+		raw = {}
+	end
+	return {
+		enabled = raw.enabled ~= false,
+		max_prompts = math.max(1, tonumber(raw.max_prompts) or 12),
+		max_age_ms = math.max(1, tonumber(raw.max_age_ms) or 180000),
+		max_idle_ms = math.max(1, tonumber(raw.max_idle_ms) or 60000),
+	}
+end
+
+local function _completion_session_key(request, complete_cfg)
+	local cwd = tostring(request.cwd or vim.fn.getcwd())
+	local effort = complete_cfg.effort or complete_cfg.reasoning_effort or complete_cfg.thought_level or "none"
+	return table.concat({
+		cwd,
+		tostring(request.model or ""),
+		tostring(effort or ""),
+		tostring(complete_cfg.temperature or ""),
+		tostring(complete_cfg.max_tokens or ""),
+	}, "\0")
+end
+
+local function _completion_entry(provider, client)
+	local entry = _completion_clients[_completion_key(provider)]
+	if entry and entry.client == client then
+		return entry
+	end
+end
+
+local function _session_is_reusable(session, reuse_cfg)
+	if not session or not reuse_cfg.enabled then
+		return false, "disabled"
+	end
+	if session.in_use then
+		return false, "in_use"
+	end
+	if session.closing then
+		return false, "closing"
+	end
+	if session.prompt_count >= reuse_cfg.max_prompts then
+		return false, "prompt_budget"
+	end
+	local now = now_ms()
+	if elapsed_ms(session.created_ms) >= reuse_cfg.max_age_ms then
+		return false, "age_budget"
+	end
+	if session.last_used_ms and now - session.last_used_ms >= reuse_cfg.max_idle_ms then
+		return false, "idle_budget"
+	end
+	return true, nil
+end
+
+local function _remove_cached_session(provider, client, session)
+	local entry = _completion_entry(provider, client)
+	if not entry or not entry.sessions then
+		return
+	end
+	for key, cached in pairs(entry.sessions) do
+		if cached == session then
+			entry.sessions[key] = nil
+		end
+	end
+end
+
+local _discard_completion_client
+
+local function _retire_completion_session(provider, client, session, reason)
+	if not session or session.closing then
+		return
+	end
+	session.closing = true
+	session.in_use = false
+	_remove_cached_session(provider, client, session)
+	completion_debug(
+		"session retire provider=%s session=%s reason=%s prompts=%d",
+		provider_label(provider),
+		tostring(session.id or ""),
+		tostring(reason or ""),
+		tonumber(session.prompt_count) or 0
+	)
+	if client and session.id then
+		pcall(function()
+			client:unsubscribe(session.id)
+		end)
+		if client:supports_session_close() then
+			client:close_session(session.id)
+		else
+			_discard_completion_client(provider, client, "retired session without close support")
+		end
+	end
+end
+
+function _discard_completion_client(provider, client, reason)
 	local key = _completion_key(provider)
 	local entry = _completion_clients[key]
 	if not entry or entry.client ~= client then
@@ -870,6 +1003,12 @@ local function _discard_completion_client(provider, client, reason)
 		tostring(reason or "")
 	)
 	_completion_clients[key] = nil
+	if entry.sessions then
+		for _, session in pairs(entry.sessions) do
+			session.closing = true
+			session.in_use = false
+		end
+	end
 	pcall(function()
 		client:stop()
 	end)
@@ -924,6 +1063,7 @@ local function _get_completion_client(provider, on_ready)
 		client = client,
 		ready_waiters = { on_ready },
 		authenticated = false,
+		sessions = {},
 	}
 	_completion_clients[key] = entry
 
@@ -1040,6 +1180,159 @@ local function _model_option_summary(option)
 	)
 end
 
+local function _option_label(option)
+	return table
+		.concat({
+			tostring(option.category or ""),
+			tostring(option.id or ""),
+			tostring(option.name or ""),
+		}, " ")
+		:lower()
+end
+
+local function _matches_all(label, words)
+	for _, word in ipairs(words) do
+		if not label:find(word, 1, true) then
+			return false
+		end
+	end
+	return true
+end
+
+local function _select_config_option(config_options, matcher)
+	for _, option in ipairs(config_options or {}) do
+		if type(option) == "table" and option.type == "select" and matcher(option, _option_label(option)) then
+			return option
+		end
+	end
+end
+
+local function _select_exact_value(option, desired_values)
+	if type(option) ~= "table" then
+		return nil
+	end
+	for _, desired in ipairs(desired_values or {}) do
+		local desired_text = tostring(desired or "")
+		if desired_text ~= "" then
+			local desired_lower = desired_text:lower()
+			for _, candidate in ipairs(option.options or {}) do
+				if type(candidate) == "table" then
+					local value = candidate.value
+					local name = candidate.name
+					if value == desired_text or name == desired_text then
+						return value
+					end
+					if type(value) == "string" and value:lower() == desired_lower then
+						return value
+					end
+					if type(name) == "string" and name:lower() == desired_lower then
+						return value
+					end
+				end
+			end
+		end
+	end
+end
+
+local function _select_small_numeric_value(option, preferred)
+	local preferred_number = tonumber(preferred)
+	local best_value = nil
+	local best_score = nil
+	for _, candidate in ipairs(type(option) == "table" and option.options or {}) do
+		if type(candidate) == "table" then
+			local value = candidate.value
+			local number = tonumber(value) or tonumber(candidate.name)
+			if number then
+				local score = number
+				if preferred_number and number <= preferred_number then
+					score = -number
+				end
+				if not best_score or score < best_score then
+					best_score = score
+					best_value = value
+				end
+			end
+		end
+	end
+	return best_value
+end
+
+local function _completion_config_choice(role, config_options, request, complete_cfg)
+	if role == "model" then
+		if not request.model or request.model == "" then
+			return nil, nil, nil, "no_requested_model"
+		end
+		local option = _model_config_option(config_options)
+		if not option then
+			return nil, nil, nil, "no_model_option"
+		end
+		local value = _model_config_value(option, request.model)
+		if not value then
+			return option,
+				nil,
+				{
+					code = -32602,
+					message = "requested completion model is not advertised by provider: " .. tostring(request.model),
+					data = { availableModels = _model_config_values(option) },
+				},
+				"model_unavailable"
+		end
+		return option, value, nil, nil
+	end
+
+	if role == "effort" then
+		local option = _select_config_option(config_options, function(option, label)
+			return option.category == "thought_level"
+				or option.category == "reasoning"
+				or label:find("thought", 1, true) ~= nil
+				or label:find("thinking", 1, true) ~= nil
+				or label:find("reasoning", 1, true) ~= nil
+				or label:find("effort", 1, true) ~= nil
+		end)
+		if not option then
+			return nil, nil, nil, "no_effort_option"
+		end
+		local configured = complete_cfg.effort or complete_cfg.reasoning_effort or complete_cfg.thought_level or "none"
+		local value = _select_exact_value(option, {
+			configured,
+			"none",
+			"off",
+			"disabled",
+			"false",
+			"0",
+			"minimal",
+			"minimum",
+			"low",
+		})
+		return option, value, nil, value and nil or "no_effort_value"
+	end
+
+	if role == "temperature" then
+		local option = _select_config_option(config_options, function(_, label)
+			return label:find("temperature", 1, true) ~= nil
+		end)
+		if not option then
+			return nil, nil, nil, "no_temperature_option"
+		end
+		local configured = complete_cfg.temperature
+		local value = _select_exact_value(option, { configured, "0", "0.0", "zero", "deterministic" })
+			or _select_small_numeric_value(option, configured)
+		return option, value, nil, value and nil or "no_temperature_value"
+	end
+
+	if role == "max_tokens" then
+		local option = _select_config_option(config_options, function(_, label)
+			return _matches_all(label, { "token" }) and (label:find("max", 1, true) or label:find("output", 1, true))
+		end)
+		if not option then
+			return nil, nil, nil, "no_max_tokens_option"
+		end
+		local configured = complete_cfg.max_tokens
+		local value = _select_exact_value(option, { configured }) or _select_small_numeric_value(option, configured)
+		return option, value, nil, value and nil or "no_max_tokens_value"
+	end
+end
+
 local function _is_prompt_timeout(err)
 	return type(err) == "table"
 		and err.code == -32001
@@ -1048,43 +1341,28 @@ local function _is_prompt_timeout(err)
 		and err.data.method == "session/prompt"
 end
 
+local function _is_transport_closed(err)
+	return type(err) == "table" and err.code == -32000 and tostring(err.message or ""):match("^transport ") ~= nil
+end
+
 local function _scope_block(scope)
 	if type(scope) ~= "table" or type(scope.text) ~= "string" or scope.text == "" then
 		return nil
 	end
 	return table.concat({
-		("<focused_scope type=%q start_line=%s end_line=%s>"):format(
+		("Relevant surrounding code (%s, lines %s-%s):"):format(
 			tostring(scope.type or ""),
 			tostring(scope.start_line or ""),
 			tostring(scope.end_line or "")
 		),
 		scope.text,
-		"</focused_scope>",
 	}, "\n")
 end
 
 local function _completion_prompt(request)
 	local lines = {
-		"You are an inline code completion engine.",
-		"This is a fill-in-the-middle request. The cursor is exactly between",
-		"</prefix> and <suffix>. Use only the supplied context.",
-		"",
-		"Hard rules:",
-		"- Do not inspect the repository, run tools, ask questions, or describe your process.",
-		"- Return exactly one XML block: <completion>RAW_TEXT_TO_INSERT</completion>.",
-		"- Put no prose, markdown, reasoning, status text, or code fences outside that block.",
-		"- RAW_TEXT_TO_INSERT must be exactly insertable at the cursor.",
-		"- Do not repeat text already present in <prefix> or <suffix>.",
-		"- Prefer completing the current line. Use newlines only when the next edit is clearly",
-		"  a multi-line expression, statement, block, or argument list.",
-		"- Stop at the end of the current phrase, expression, statement, call, or block.",
-		"- If the cursor is mid-identifier, complete that identifier only.",
-		"- If nothing useful can be added, return <completion></completion>.",
-		"",
-		"File: " .. tostring(request.filepath or ""),
-		"Language: " .. tostring(request.language or ""),
-		"Cursor line: " .. tostring(request.cursor and request.cursor.line or ""),
-		"Cursor byte column: " .. tostring(request.cursor and request.cursor.column or ""),
+		("Return only the %s text to insert after this cursor."):format(tostring(request.language or "code")),
+		"No tools. No search. No explanation. No markdown.",
 		"",
 	}
 
@@ -1095,12 +1373,11 @@ local function _completion_prompt(request)
 	end
 
 	vim.list_extend(lines, {
-		"<prefix>",
-		request.prefix or "",
-		"</prefix>",
-		"<suffix>",
-		request.suffix or "",
-		"</suffix>",
+		"Code before cursor: " .. tostring(request.prefix or ""),
+		"",
+		"Code after cursor: " .. tostring(request.suffix or ""),
+		"",
+		"Text to insert:",
 	})
 	return table.concat(lines, "\n")
 end
@@ -1117,10 +1394,15 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 	local done = false
 	local session_id = nil
 	local client_ref = nil
+	local session_entry = nil
 	local session_closed = false
 	local pending_requests = {}
 	local complete_cfg = config.current.complete or {}
+	local reuse_cfg = _completion_session_reuse_config(complete_cfg)
+	local session_cache_key = _completion_session_key(request, complete_cfg)
 	local prompt_timeout_ms = complete_cfg.prompt_timeout_ms
+	local new_session_request_id = nil
+	local prompt_request_id = nil
 	local started_ms = now_ms()
 	local chunk_count = 0
 	local streamed_chars = 0
@@ -1168,13 +1450,19 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 		pending_requests[id] = nil
 	end
 
-	local function forget_pending_requests()
+	local function forget_pending_requests(skip_id)
 		if client_ref then
 			for id in pairs(pending_requests) do
-				client_ref:forget_request(id)
+				if id ~= skip_id then
+					client_ref:forget_request(id)
+				end
 			end
 		end
-		pending_requests = {}
+		if skip_id then
+			pending_requests = { [skip_id] = pending_requests[skip_id] }
+		else
+			pending_requests = {}
+		end
 	end
 
 	local function close_session()
@@ -1191,6 +1479,7 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 			return
 		end
 		local prompt_timed_out = _is_prompt_timeout(err)
+		local transport_closed = _is_transport_closed(err)
 		done = true
 		active = false
 		completion_debug(
@@ -1210,10 +1499,40 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 				client_ref:cancel(session_id)
 			end
 			client_ref:unsubscribe(session_id)
-			close_session()
+			if session_entry then
+				session_entry.in_use = false
+				session_entry.last_used_ms = now_ms()
+				if transport_closed then
+					session_entry.closing = true
+					_remove_cached_session(provider, client_ref, session_entry)
+					session_entry = nil
+				elseif err then
+					_retire_completion_session(provider, client_ref, session_entry, err_summary(err))
+					session_entry = nil
+				else
+					local reusable, reason = _session_is_reusable(session_entry, reuse_cfg)
+					if reusable then
+						completion_debug(
+							"session cached session=%s prompts=%d cache_key=%s",
+							tostring(session_entry.id or ""),
+							tonumber(session_entry.prompt_count) or 0,
+							display_key(session_cache_key)
+						)
+					else
+						_retire_completion_session(provider, client_ref, session_entry, reason)
+						session_entry = nil
+					end
+				end
+			elseif not transport_closed then
+				close_session()
+			end
 		end
-		if prompt_timed_out and client_ref then
-			_discard_completion_client(provider, client_ref, "session/prompt timeout")
+		if (prompt_timed_out or transport_closed) and client_ref then
+			_discard_completion_client(
+				provider,
+				client_ref,
+				prompt_timed_out and "session/prompt timeout" or "transport closed"
+			)
 		end
 		vim.schedule(function()
 			on_done(err)
@@ -1237,32 +1556,12 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 			tostring(client.protocol_version or ""),
 			elapsed_ms(started_ms)
 		)
-		local new_session_request_id
-		local session_started_ms = now_ms()
-		completion_debug("session/new start cwd=%s", tostring(request.cwd or vim.fn.getcwd()))
-		new_session_request_id = track_request(client:new_session(request.cwd or vim.fn.getcwd(), function(result, err)
-			untrack_request(new_session_request_id)
-			if not active then
-				return
-			end
-			if err or not result or not result.sessionId then
-				completion_debug(
-					"session/new failed elapsed_ms=%d err=%s",
-					elapsed_ms(session_started_ms),
-					err_summary(err)
-				)
-				finish(err or "session/new returned no sessionId")
-				return
-			end
-			session_id = result.sessionId
-			completion_debug(
-				"session/new done session=%s elapsed_ms=%d config_options=%d model_option=%s",
-				tostring(session_id),
-				elapsed_ms(session_started_ms),
-				#(result.configOptions or {}),
-				_model_option_summary(_model_config_option(result.configOptions))
-			)
+		local entry = _completion_entry(provider, client)
+		if entry and not entry.sessions then
+			entry.sessions = {}
+		end
 
+		local function subscribe_session()
 			client:subscribe(session_id, {
 				on_update = function(update)
 					if not active then
@@ -1297,135 +1596,239 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 				end,
 			})
 			completion_debug("session subscribed session=%s", tostring(session_id))
+		end
 
-			local function send_prompt()
-				local prompt_request_id
-				local prompt_opts = nil
-				if prompt_timeout_ms ~= nil then
-					prompt_opts = { timeout_ms = prompt_timeout_ms }
-				end
-				local prompt_text = _completion_prompt(request)
-				local prompt_started_ms = now_ms()
+		local function send_prompt()
+			local prompt_opts = nil
+			if prompt_timeout_ms ~= nil then
+				prompt_opts = { timeout_ms = prompt_timeout_ms }
+			end
+			local prompt_text = _completion_prompt(request)
+			local prompt_started_ms = now_ms()
+			if session_entry then
+				session_entry.prompt_count = (tonumber(session_entry.prompt_count) or 0) + 1
+				session_entry.in_use = true
+			end
+			completion_debug(
+				"send prompt provider=%s session=%s model=%s prompt_chars=%d prefix_chars=%d suffix_chars=%d timeout_ms=%s scope=%s:%s-%s",
+				tostring(provider.name or provider.command),
+				tostring(session_id),
+				tostring(request.model or ""),
+				#prompt_text,
+				#tostring(request.prefix or ""),
+				#tostring(request.suffix or ""),
+				tostring(prompt_timeout_ms),
+				tostring(scope.type or "none"),
+				tostring(scope.start_line or ""),
+				tostring(scope.end_line or "")
+			)
+			prompt_request_id = track_request(client:prompt(session_id, {
+				{ type = "text", text = prompt_text },
+			}, function(_, prompt_err)
+				untrack_request(prompt_request_id)
 				completion_debug(
-					"send prompt provider=%s session=%s model=%s prompt_chars=%d prefix_chars=%d suffix_chars=%d timeout_ms=%s scope=%s:%s-%s",
-					tostring(provider.name or provider.command),
-					tostring(session_id),
-					tostring(request.model or ""),
-					#prompt_text,
-					#tostring(request.prefix or ""),
-					#tostring(request.suffix or ""),
-					tostring(prompt_timeout_ms),
-					tostring(scope.type or "none"),
-					tostring(scope.start_line or ""),
-					tostring(scope.end_line or "")
-				)
-				prompt_request_id = track_request(client:prompt(session_id, {
-					{ type = "text", text = prompt_text },
-				}, function(_, prompt_err)
-					untrack_request(prompt_request_id)
-					completion_debug(
-						"prompt done session=%s id=%s elapsed_ms=%d chunks=%d streamed_chars=%d err=%s",
-						tostring(session_id),
-						tostring(prompt_request_id or ""),
-						elapsed_ms(prompt_started_ms),
-						chunk_count,
-						streamed_chars,
-						err_summary(prompt_err)
-					)
-					finish(prompt_err)
-				end, prompt_opts))
-				completion_debug(
-					"prompt request sent session=%s id=%s timeout_ms=%s",
+					"prompt done session=%s id=%s elapsed_ms=%d chunks=%d streamed_chars=%d err=%s",
 					tostring(session_id),
 					tostring(prompt_request_id or ""),
-					tostring(prompt_timeout_ms)
+					elapsed_ms(prompt_started_ms),
+					chunk_count,
+					streamed_chars,
+					err_summary(prompt_err)
 				)
-			end
+				if done then
+					if session_entry and session_entry.cancelling then
+						session_entry.cancelling = false
+						session_entry.in_use = false
+						session_entry.last_used_ms = now_ms()
+						if prompt_err then
+							_retire_completion_session(provider, client_ref, session_entry, err_summary(prompt_err))
+							session_entry = nil
+						else
+							local reusable, reason = _session_is_reusable(session_entry, reuse_cfg)
+							if not reusable then
+								_retire_completion_session(provider, client_ref, session_entry, reason)
+								session_entry = nil
+							end
+						end
+					end
+					return
+				end
+				finish(prompt_err)
+			end, prompt_opts))
+			completion_debug(
+				"prompt request sent session=%s id=%s timeout_ms=%s",
+				tostring(session_id),
+				tostring(prompt_request_id or ""),
+				tostring(prompt_timeout_ms)
+			)
+		end
 
-			local function configure_model(callback)
-				if not request.model or request.model == "" then
-					completion_debug("model config skipped session=%s reason=no_requested_model", tostring(session_id))
+		local function configure_session(config_options, callback)
+			local roles = { "model", "effort", "temperature", "max_tokens" }
+			local function configure_next(index, options)
+				if not active then
+					return
+				end
+				local role = roles[index]
+				if not role then
 					callback(nil)
 					return
 				end
-
-				local model_option = _model_config_option(result.configOptions)
-				if not model_option then
+				local option, value, choice_err, skip_reason =
+					_completion_config_choice(role, options, request, complete_cfg)
+				if choice_err then
 					completion_debug(
-						"model config skipped session=%s requested=%s reason=no_model_option config_options=%d",
+						"config %s failed session=%s reason=%s err=%s",
+						role,
 						tostring(session_id),
-						tostring(request.model),
-						#(result.configOptions or {})
+						tostring(skip_reason or ""),
+						err_summary(choice_err)
 					)
-					callback(nil)
+					callback(choice_err)
+					return
+				end
+				if not option or not value then
+					completion_debug(
+						"config %s skipped session=%s reason=%s",
+						role,
+						tostring(session_id),
+						tostring(skip_reason or "no_option")
+					)
+					configure_next(index + 1, options)
+					return
+				end
+				if option.currentValue == value then
+					completion_debug(
+						"config %s already selected session=%s value=%s option=%s",
+						role,
+						tostring(session_id),
+						tostring(value),
+						tostring(option.id or "")
+					)
+					configure_next(index + 1, options)
 					return
 				end
 
+				local config_request_id
+				local config_started_ms = now_ms()
 				completion_debug(
-					"model config advertised session=%s requested=%s option=%s",
+					"config %s set start session=%s value=%s option=%s",
+					role,
 					tostring(session_id),
-					tostring(request.model),
-					_model_option_summary(model_option)
+					tostring(value),
+					tostring(option.id or "")
 				)
-				local model_value = _model_config_value(model_option, request.model)
-				if not model_value then
-					completion_debug(
-						"model config failed session=%s requested=%s available=%s",
-						tostring(session_id),
-						tostring(request.model),
-						table.concat(_model_config_values(model_option), ",")
-					)
-					callback({
-						code = -32602,
-						message = "requested completion model is not advertised by provider: "
-							.. tostring(request.model),
-						data = { availableModels = _model_config_values(model_option) },
-					})
-					return
-				end
-
-				if model_option.currentValue == model_value then
-					completion_debug(
-						"model config already selected session=%s requested=%s value=%s",
-						tostring(session_id),
-						tostring(request.model),
-						tostring(model_value)
-					)
-					callback(nil)
-					return
-				end
-
-				local model_request_id
-				local model_started_ms = now_ms()
-				completion_debug(
-					"model config set start session=%s requested=%s value=%s option=%s",
-					tostring(session_id),
-					tostring(request.model),
-					tostring(model_value),
-					tostring(model_option.id or "")
-				)
-				model_request_id = track_request(
-					client:set_config_option(session_id, model_option.id, model_value, function(_, model_err)
-						untrack_request(model_request_id)
+				config_request_id =
+					track_request(client:set_config_option(session_id, option.id, value, function(result, config_err)
+						untrack_request(config_request_id)
 						completion_debug(
-							"model config set done session=%s id=%s elapsed_ms=%d err=%s",
+							"config %s set done session=%s id=%s elapsed_ms=%d err=%s",
+							role,
 							tostring(session_id),
-							tostring(model_request_id or ""),
-							elapsed_ms(model_started_ms),
-							err_summary(model_err)
+							tostring(config_request_id or ""),
+							elapsed_ms(config_started_ms),
+							err_summary(config_err)
 						)
-						callback(model_err)
-					end)
-				)
+						if config_err then
+							callback(config_err)
+							return
+						end
+						local next_options = options
+						if
+							type(result) == "table"
+							and type(result.configOptions) == "table"
+							and #result.configOptions > 0
+						then
+							next_options = result.configOptions
+						end
+						configure_next(index + 1, next_options)
+					end))
 			end
+			configure_next(1, config_options or {})
+		end
 
-			configure_model(function(model_err)
-				if model_err then
-					finish(model_err)
+		local function start_session(result, reused)
+			session_id = result.sessionId
+			subscribe_session()
+			if reused then
+				completion_debug(
+					"session reuse session=%s prompts=%d cache_key=%s",
+					tostring(session_id),
+					tonumber(session_entry and session_entry.prompt_count) or 0,
+					display_key(session_cache_key)
+				)
+				send_prompt()
+				return
+			end
+			configure_session(result.configOptions or {}, function(config_err)
+				if config_err then
+					finish(config_err)
 					return
 				end
 				send_prompt()
 			end)
+		end
+
+		local cached = entry and entry.sessions and entry.sessions[session_cache_key] or nil
+		local reusable, reuse_reason = _session_is_reusable(cached, reuse_cfg)
+		if cached and not reusable then
+			if reuse_reason ~= "in_use" and reuse_reason ~= "closing" then
+				_retire_completion_session(provider, client, cached, reuse_reason)
+			end
+			cached = nil
+		end
+		if cached and reusable then
+			session_entry = cached
+			session_entry.in_use = true
+			start_session({ sessionId = cached.id, configOptions = cached.config_options or {} }, true)
+			return
+		end
+
+		local session_started_ms = now_ms()
+		completion_debug("session/new start cwd=%s", tostring(request.cwd or vim.fn.getcwd()))
+		new_session_request_id = track_request(client:new_session(request.cwd or vim.fn.getcwd(), function(result, err)
+			untrack_request(new_session_request_id)
+			if not active then
+				if result and result.sessionId then
+					_retire_completion_session(provider, client, {
+						id = result.sessionId,
+						prompt_count = 0,
+						created_ms = now_ms(),
+						last_used_ms = now_ms(),
+					}, "aborted before session ready")
+				end
+				return
+			end
+			if err or not result or not result.sessionId then
+				completion_debug(
+					"session/new failed elapsed_ms=%d err=%s",
+					elapsed_ms(session_started_ms),
+					err_summary(err)
+				)
+				finish(err or "session/new returned no sessionId")
+				return
+			end
+			session_entry = {
+				id = result.sessionId,
+				config_options = result.configOptions or {},
+				prompt_count = 0,
+				created_ms = now_ms(),
+				last_used_ms = now_ms(),
+				in_use = true,
+			}
+			if entry and entry.sessions and reuse_cfg.enabled then
+				entry.sessions[session_cache_key] = session_entry
+			end
+			completion_debug(
+				"session/new done session=%s elapsed_ms=%d config_options=%d model_option=%s reuse=%s cache_key=%s",
+				tostring(result.sessionId),
+				elapsed_ms(session_started_ms),
+				#(result.configOptions or {}),
+				_model_option_summary(_model_config_option(result.configOptions)),
+				tostring(reuse_cfg.enabled),
+				display_key(session_cache_key)
+			)
+			start_session(result, false)
 		end))
 	end)
 
@@ -1438,7 +1841,22 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 		if session_id and client_ref then
 			client_ref:cancel(session_id)
 			client_ref:unsubscribe(session_id)
-			close_session()
+			if session_entry and prompt_request_id and reuse_cfg.enabled then
+				session_entry.cancelling = true
+				completion_debug("session cancel pending session=%s", tostring(session_id))
+				forget_pending_requests(prompt_request_id)
+				return
+			end
+			if session_entry then
+				_retire_completion_session(provider, client_ref, session_entry, "aborted before prompt completed")
+				session_entry = nil
+			else
+				close_session()
+			end
+		end
+		if not session_id and new_session_request_id then
+			forget_pending_requests(new_session_request_id)
+			return
 		end
 		forget_pending_requests()
 	end

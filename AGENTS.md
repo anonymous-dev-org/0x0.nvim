@@ -33,13 +33,18 @@ focused on inline completion only.
 
 - **One subprocess client singleton per provider command** (`_completion_clients`).
   **Why:** spawning a new provider on every keystroke is too slow.
-- **One short-lived ACP session per completion request** (`session/new` →
-  `session/prompt` → teardown). **Why:** ACP sessions accumulate prompt history;
-  reusing a session would pollute later completions.
+- **A bounded reusable ACP completion session per provider/model/cwd/config**
+  (`session/new` → a capped burst of `session/prompt` turns → teardown). Keep
+  the reuse budget bounded. **Why:** ACP sessions accumulate prompt history, but
+  a short burst of history helps related inline completions while avoiding the
+  seconds of latency and extra no-close provider footprint from creating a fresh
+  session for every debounced keystroke.
 - **Close sessions only when the agent advertises
-  `agentCapabilities.sessionCapabilities.close`**. On normal finish, send
+  `agentCapabilities.sessionCapabilities.close`**. On normal retirement, send
   `session/close` as a request only when supported; on abort, always send
-  `session/cancel` and additionally request `session/close` only when supported.
+  `session/cancel`. A reusable session stays marked busy until the prompt
+  settles; a retiring session additionally requests `session/close` only when
+  supported.
   **Why:** ACP requires clients not to call unsupported close methods; providers
   that lack it return Method-not-found errors, while providers that support it
   need explicit close to free session resources.
@@ -79,6 +84,10 @@ focused on inline completion only.
   keymaps, timeouts).
 - **`complete.model`** is the user-facing selection. Provider routing is derived
   from the model via `complete.model_providers`.
+- **`complete.effort = "none"`, `complete.temperature = 0`, and
+  `complete.max_tokens = 128`** are applied through ACP session config options
+  when the provider advertises matching selectors. **Why:** inline completion
+  should be deterministic, short, and should not spend time on thinking traces.
 - **Thinking/reasoning model variants must not be exposed for completion.**
   **Why:** those variants can leak assistant preambles such as "Let me think
   about this" into ghost text.
