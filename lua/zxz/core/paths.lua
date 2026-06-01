@@ -33,6 +33,14 @@ function M.gateway_key_path()
 	return join(M.state_dir(), "gateway.json")
 end
 
+function M.rag_index_path()
+	return join(M.state_dir(), "rag.msp")
+end
+
+function M.transformers_cache_path()
+	return join(M.state_dir(), "transformers-cache")
+end
+
 function M.completion_server()
 	return join(M.plugin_root(), "server", "dist", "completion-server.js")
 end

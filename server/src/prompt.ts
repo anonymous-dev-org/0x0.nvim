@@ -5,13 +5,24 @@ export type ScopeBlock = {
   end_line?: number;
 };
 
+export type CompletionExample = {
+  prefix?: string;
+  suffix?: string;
+  completion?: string;
+};
+
 export type CompleteParams = {
   model: string;
   prefix?: string;
   suffix?: string;
   language?: string;
   filepath?: string;
+  cwd?: string;
+  header?: string;
+  imports?: string;
+  indent?: string;
   scope?: ScopeBlock;
+  examples?: CompletionExample[];
   max_tokens?: number;
   temperature?: number;
 };
@@ -21,38 +32,98 @@ function scopeBlock(scope: ScopeBlock | undefined): string | null {
     return null;
   }
   return [
-    `Relevant surrounding code (${scope.type ?? ""}, lines ${scope.start_line ?? ""}-${scope.end_line ?? ""}):`,
+    `Enclosing scope (${scope.type ?? "block"}, lines ${scope.start_line ?? ""}-${scope.end_line ?? ""}):`,
     scope.text,
   ].join("\n");
 }
 
+function examplesBlock(examples: CompletionExample[] | undefined): string | null {
+  if (!Array.isArray(examples) || examples.length === 0) {
+    return null;
+  }
+
+  const lines = ["Recent accepted completions in this language:"];
+  for (let i = 0; i < examples.length; i += 1) {
+    const example = examples[i];
+    if (!example || typeof example !== "object") {
+      continue;
+    }
+    const prefix = typeof example.prefix === "string" ? example.prefix : "";
+    const suffix = typeof example.suffix === "string" ? example.suffix : "";
+    const completion =
+      typeof example.completion === "string" ? example.completion : "";
+    if (prefix === "" && suffix === "" && completion === "") {
+      continue;
+    }
+    lines.push(
+      "",
+      `Example ${i + 1}:`,
+      `Before cursor: ${prefix}`,
+      `Inserted: ${completion}`,
+      `After cursor: ${suffix}`,
+    );
+  }
+
+  return lines.length > 1 ? lines.join("\n") : null;
+}
+
+function cursorContext(request: CompleteParams): string {
+  const prefix = request.prefix ?? "";
+  const suffix = request.suffix ?? "";
+  const lang = request.language ?? "code";
+  const filepath = request.filepath ?? "unknown";
+
+  return [
+    `Cursor context (${lang}, ${filepath}):`,
+    "```",
+    `${prefix}<|cursor|>${suffix}`,
+    "```",
+  ].join("\n");
+}
+
 export function buildPrompt(request: CompleteParams): string {
+  const lang = request.language ?? "code";
   const lines = [
-    `Return only the ${request.language ?? "code"} text to insert after this cursor.`,
-    "No tools. No search. No explanation. No markdown.",
+    `Complete ${lang} code at the cursor.`,
+    `File: ${request.filepath ?? "unknown"}`,
+    `Project root: ${request.cwd ?? "."}`,
+    "",
+    "Rules:",
+    "- Output ONLY the text to insert at <|cursor|>",
+    "- No tools, search, markdown fences, explanation, or repeated prefix",
     "",
   ];
+
+  if (typeof request.imports === "string" && request.imports !== "") {
+    lines.push("Imports in this file:", request.imports, "");
+  } else if (typeof request.header === "string" && request.header !== "") {
+    lines.push("File header:", request.header, "");
+  }
 
   const scope = scopeBlock(request.scope);
   if (scope) {
     lines.push(scope, "");
   }
 
-  lines.push(
-    `Code before cursor: ${request.prefix ?? ""}`,
-    "",
-    `Code after cursor: ${request.suffix ?? ""}`,
-    "",
-    "Text to insert:",
-  );
+  const examples = examplesBlock(request.examples);
+  if (examples) {
+    lines.push(examples, "");
+  }
 
+  lines.push(cursorContext(request), "");
+
+  if (typeof request.indent === "string" && request.indent !== "") {
+    lines.push(`Current line indentation: ${JSON.stringify(request.indent)}`, "");
+  }
+
+  lines.push("Text to insert:");
   return lines.join("\n");
 }
 
 export function systemPrompt(): string {
   return [
     "You are an inline code completion engine.",
-    "Output only the text to insert at the cursor.",
+    "Output only the text to insert at the cursor marker.",
     "No markdown fences, no explanations, no repeated prefix.",
   ].join(" ");
 }

@@ -52,6 +52,18 @@ M.defaults = {
 			enabled = true,
 			max_entries = 100,
 		},
+		rag = {
+			enabled = true,
+			max_entries = 5000,
+			session_entries = 3,
+			max_field_chars = 300,
+			direct_hit_threshold = 0.92,
+			example_threshold = 0.75,
+			max_examples = 3,
+			embedding_model = "Xenova/all-MiniLM-L6-v2",
+			warmup_on_start = true,
+			persist_debounce_ms = 500,
+		},
 	},
 }
 

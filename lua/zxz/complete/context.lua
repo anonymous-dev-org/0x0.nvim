@@ -11,6 +11,22 @@ local MAX_SCOPE_LINES = 120
 local MAX_PREFIX_CHARS = 4000
 local MAX_SUFFIX_CHARS = 2000
 local MAX_SCOPE_CHARS = 4000
+local MAX_HEADER_LINES = 30
+local MAX_HEADER_CHARS = 1200
+local MAX_IMPORT_LINES = 40
+local MAX_IMPORT_CHARS = 1200
+
+local IMPORT_LINE_PATTERNS = {
+	"^%s*import%s",
+	"^%s*from%s.+%simport%s",
+	"^%s*require%(",
+	"^%s*local%s.-%s*=%s*require%(",
+	"^%s*use%s",
+	"^%s*#include%s",
+	"^%s*package%s",
+	"^%s*using%s",
+	"^%s*extern%s",
+}
 
 local SCOPE_TYPE_MARKERS = {
 	"function",
@@ -52,6 +68,49 @@ local function trim_end(text, max_chars)
 		return text
 	end
 	return text:sub(1, max_chars)
+end
+
+local function looks_like_import(line)
+	for _, pattern in ipairs(IMPORT_LINE_PATTERNS) do
+		if line:match(pattern) then
+			return true
+		end
+	end
+	return false
+end
+
+local function gather_imports(bufnr, cursor_row)
+	local total = vim.api.nvim_buf_line_count(bufnr)
+	local scan_end = math.min(total, math.max(cursor_row, MAX_IMPORT_LINES))
+	if scan_end <= 0 then
+		return nil
+	end
+
+	local lines = vim.api.nvim_buf_get_lines(bufnr, 0, scan_end, false)
+	local imports = {}
+	for _, line in ipairs(lines) do
+		if looks_like_import(line) then
+			imports[#imports + 1] = line
+		end
+	end
+	if #imports == 0 then
+		return nil
+	end
+
+	return trim_end(table.concat(imports, "\n"), MAX_IMPORT_CHARS)
+end
+
+local function gather_header(bufnr, cursor_row)
+	if cursor_row <= MAX_HEADER_LINES then
+		return nil
+	end
+
+	local lines = vim.api.nvim_buf_get_lines(bufnr, 0, math.min(MAX_HEADER_LINES, cursor_row - 1), false)
+	if #lines == 0 then
+		return nil
+	end
+
+	return trim_end(table.concat(lines, "\n"), MAX_HEADER_CHARS)
 end
 
 local function gather_scope(bufnr, row, col)
@@ -111,7 +170,7 @@ local function gather_scope(bufnr, row, col)
 end
 
 --- Gather context from the current buffer at the cursor position.
----@return { prefix: string, suffix: string, language: string, filepath: string, cursor: table, scope: table|nil }
+---@return { prefix: string, suffix: string, language: string, filepath: string, cursor: table, scope: table|nil, header: string|nil, imports: string|nil, indent: string }
 function M.gather()
 	local bufnr = vim.api.nvim_get_current_buf()
 	local cursor = vim.api.nvim_win_get_cursor(0)
@@ -149,6 +208,9 @@ function M.gather()
 		filepath = "untitled." .. (filetype ~= "" and filetype or "txt")
 	end
 
+	local imports = gather_imports(bufnr, row)
+	local header = imports and nil or gather_header(bufnr, row)
+
 	return {
 		prefix = prefix,
 		suffix = suffix,
@@ -159,6 +221,9 @@ function M.gather()
 			column = col,
 		},
 		scope = gather_scope(bufnr, row, col),
+		header = header,
+		imports = imports,
+		indent = before_cursor:match("^(%s*)") or "",
 	}
 end
 

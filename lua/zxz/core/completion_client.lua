@@ -34,11 +34,20 @@ local function completion_debug(fmt, ...)
 	log.debug("completion-server: " .. tostring(msg))
 end
 
-local function gateway_env()
+local function server_env()
 	local api_key = require("zxz.core.gateway_auth").get_api_key()
 	local env = {}
 	if type(api_key) == "string" and api_key ~= "" then
 		env.AI_GATEWAY_API_KEY = api_key
+	end
+	env.ZXZ_RAG_INDEX_PATH = paths.rag_index_path()
+	env.ZXZ_TRANSFORMERS_CACHE = paths.transformers_cache_path()
+	local rag = (config.current.complete or {}).rag or {}
+	if type(rag.embedding_model) == "string" and rag.embedding_model ~= "" then
+		env.ZXZ_EMBEDDING_MODEL = rag.embedding_model
+	end
+	if rag.warmup_on_start == false then
+		env.ZXZ_RAG_WARMUP = "0"
 	end
 	return env
 end
@@ -75,6 +84,10 @@ local function fail_pending(entry, err)
 		if pending.on_models then
 			vim.schedule(function()
 				pending.on_models(nil, err)
+			end)
+		elseif pending.on_rag then
+			vim.schedule(function()
+				pending.on_rag(nil, err)
 			end)
 		elseif pending.on_done then
 			vim.schedule(function()
@@ -151,7 +164,7 @@ local function get_server(on_ready)
 	local transport = _transport_factory({
 		command = "node",
 		args = { script },
-		env = gateway_env(),
+		env = server_env(),
 	}, {
 		on_state = function(state)
 			completion_debug("transport state=%s", tostring(state))
@@ -212,6 +225,16 @@ local function get_server(on_ready)
 				end)
 				return
 			end
+			if message.event == "rag" and pending.on_rag then
+				local result = {
+					direct = type(message.direct) == "table" and message.direct.completion or nil,
+					examples = type(message.examples) == "table" and message.examples or nil,
+				}
+				vim.schedule(function()
+					pending.on_rag(result, nil)
+				end)
+				return
+			end
 			if message.event == "done" then
 				entry.pending[id] = nil
 				if pending.on_done then
@@ -227,6 +250,10 @@ local function get_server(on_ready)
 				if pending.on_models then
 					vim.schedule(function()
 						pending.on_models(nil, err)
+					end)
+				elseif pending.on_rag then
+					vim.schedule(function()
+						pending.on_rag(nil, err)
 					end)
 				elseif pending.on_done then
 					vim.schedule(function()
@@ -252,7 +279,7 @@ end
 
 ---Stream an inline completion via the bundled AI Gateway server.
 ---@param _provider any ignored; kept for API compatibility
----@param request { prefix: string, suffix: string, language?: string, filepath?: string, model?: string, max_tokens?: number, temperature?: number, scope?: table }
+---@param request { prefix: string, suffix: string, language?: string, filepath?: string, model?: string, max_tokens?: number, temperature?: number, scope?: table, cwd?: string, header?: string, imports?: string, indent?: string, examples?: table[] }
 ---@param on_chunk fun(text: string)
 ---@param on_done fun(err?: any)
 ---@return fun() abort
@@ -369,6 +396,11 @@ function M.stream_completion(_provider, request, on_chunk, on_done)
 				suffix = request.suffix,
 				language = request.language,
 				filepath = request.filepath,
+				cwd = request.cwd,
+				header = request.header,
+				imports = request.imports,
+				indent = request.indent,
+				examples = request.examples,
 				scope = request.scope,
 				max_tokens = request.max_tokens,
 				temperature = request.temperature,
@@ -382,6 +414,61 @@ function M.stream_completion(_provider, request, on_chunk, on_done)
 	end)
 
 	return abort
+end
+
+---@param request table
+---@param on_result fun(result: { direct?: string, examples?: table[] }|nil, err?: any)
+function M.rag_lookup(request, on_result)
+	get_server(function(entry, err)
+		if not entry then
+			if on_result then
+				vim.schedule(function()
+					on_result(nil, err or { message = "completion server unavailable" })
+				end)
+			end
+			return
+		end
+
+		local request_id = _next_request_id + 1
+		_next_request_id = request_id
+		entry.pending[request_id] = {
+			on_rag = on_result,
+		}
+
+		local sent = send_message(entry, {
+			id = request_id,
+			method = "rag_lookup",
+			params = request,
+		})
+		if not sent then
+			entry.pending[request_id] = nil
+			discard_server(entry, "send failed")
+			if on_result then
+				vim.schedule(function()
+					on_result(nil, { message = "transport disconnected" })
+				end)
+			end
+		end
+	end)
+end
+
+---@param request table
+function M.rag_record(request)
+	get_server(function(entry, err)
+		if not entry then
+			return
+		end
+
+		local request_id = _next_request_id + 1
+		_next_request_id = request_id
+		entry.pending[request_id] = {}
+
+		send_message(entry, {
+			id = request_id,
+			method = "rag_record",
+			params = request,
+		})
+	end)
 end
 
 ---@param on_done fun(models: string[]|nil, err?: any)

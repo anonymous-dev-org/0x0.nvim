@@ -2,6 +2,8 @@ import { createInterface } from "node:readline";
 import { runComplete } from "./complete.ts";
 import { listCompletionModels } from "./models.ts";
 import type { CompleteParams } from "./prompt.ts";
+import { initRagService, lookup, record, shutdownRag } from "./rag/service.ts";
+import type { RagLookupParams, RagRecordParams } from "./rag/types.ts";
 
 type IncomingMessage = {
   id?: number;
@@ -14,7 +16,13 @@ type OutgoingMessage =
   | { id: number; event: "done" }
   | { id: number; event: "error"; message: string; code?: string }
   | { id: number; event: "pong" }
-  | { id: number; event: "models"; models: string[] };
+  | { id: number; event: "models"; models: string[] }
+  | {
+      id: number;
+      event: "rag";
+      direct?: { completion: string };
+      examples?: Array<{ prefix: string; suffix: string; completion: string }>;
+    };
 
 const inflight = new Map<number, AbortController>();
 
@@ -28,14 +36,29 @@ function logDebug(message: string): void {
 
 function asCompleteParams(params: Record<string, unknown> | undefined): CompleteParams {
   const scope = params?.scope;
+  const examples = params?.examples;
   return {
     model: String(params?.model ?? ""),
     prefix: typeof params?.prefix === "string" ? params.prefix : "",
     suffix: typeof params?.suffix === "string" ? params.suffix : "",
     language: typeof params?.language === "string" ? params.language : undefined,
     filepath: typeof params?.filepath === "string" ? params.filepath : undefined,
+    cwd: typeof params?.cwd === "string" ? params.cwd : undefined,
+    header: typeof params?.header === "string" ? params.header : undefined,
+    imports: typeof params?.imports === "string" ? params.imports : undefined,
+    indent: typeof params?.indent === "string" ? params.indent : undefined,
     max_tokens: typeof params?.max_tokens === "number" ? params.max_tokens : undefined,
     temperature: typeof params?.temperature === "number" ? params.temperature : undefined,
+    examples: Array.isArray(examples)
+      ? examples
+          .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
+          .map((entry) => ({
+            prefix: typeof entry.prefix === "string" ? entry.prefix : undefined,
+            suffix: typeof entry.suffix === "string" ? entry.suffix : undefined,
+            completion:
+              typeof entry.completion === "string" ? entry.completion : undefined,
+          }))
+      : undefined,
     scope:
       scope && typeof scope === "object"
         ? {
@@ -53,6 +76,56 @@ function asCompleteParams(params: Record<string, unknown> | undefined): Complete
               typeof (scope as Record<string, unknown>).end_line === "number"
                 ? ((scope as Record<string, unknown>).end_line as number)
                 : undefined,
+          }
+        : undefined,
+  };
+}
+
+function asRagLookupParams(params: Record<string, unknown> | undefined): RagLookupParams {
+  const scope = params?.scope;
+  return {
+    prefix: typeof params?.prefix === "string" ? params.prefix : "",
+    suffix: typeof params?.suffix === "string" ? params.suffix : "",
+    language: typeof params?.language === "string" ? params.language : "",
+    filepath: typeof params?.filepath === "string" ? params.filepath : undefined,
+    direct_hit_threshold:
+      typeof params?.direct_hit_threshold === "number" ? params.direct_hit_threshold : undefined,
+    example_threshold:
+      typeof params?.example_threshold === "number" ? params.example_threshold : undefined,
+    max_examples: typeof params?.max_examples === "number" ? params.max_examples : undefined,
+    scope:
+      scope && typeof scope === "object"
+        ? {
+            type: typeof (scope as Record<string, unknown>).type === "string"
+              ? ((scope as Record<string, unknown>).type as string)
+              : undefined,
+            text: typeof (scope as Record<string, unknown>).text === "string"
+              ? ((scope as Record<string, unknown>).text as string)
+              : undefined,
+          }
+        : undefined,
+  };
+}
+
+function asRagRecordParams(params: Record<string, unknown> | undefined): RagRecordParams {
+  const scope = params?.scope;
+  return {
+    prefix: typeof params?.prefix === "string" ? params.prefix : "",
+    suffix: typeof params?.suffix === "string" ? params.suffix : "",
+    language: typeof params?.language === "string" ? params.language : "",
+    filepath: typeof params?.filepath === "string" ? params.filepath : undefined,
+    completion: typeof params?.completion === "string" ? params.completion : "",
+    max_entries: typeof params?.max_entries === "number" ? params.max_entries : undefined,
+    max_field_chars: typeof params?.max_field_chars === "number" ? params.max_field_chars : undefined,
+    scope:
+      scope && typeof scope === "object"
+        ? {
+            type: typeof (scope as Record<string, unknown>).type === "string"
+              ? ((scope as Record<string, unknown>).type as string)
+              : undefined,
+            text: typeof (scope as Record<string, unknown>).text === "string"
+              ? ((scope as Record<string, unknown>).text as string)
+              : undefined,
           }
         : undefined,
   };
@@ -90,6 +163,31 @@ async function handleComplete(id: number, params: Record<string, unknown> | unde
   } finally {
     inflight.delete(id);
   }
+}
+
+async function handleRagLookup(id: number, params: Record<string, unknown> | undefined): Promise<void> {
+  try {
+    const result = await lookup(asRagLookupParams(params));
+    writeMessage({
+      id,
+      event: "rag",
+      direct: result.direct,
+      examples: result.examples,
+    });
+    writeMessage({ id, event: "done" });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    writeMessage({ id, event: "error", message, code: "rag_lookup_failed" });
+  }
+}
+
+function handleRagRecord(id: number, params: Record<string, unknown> | undefined): void {
+  writeMessage({ id, event: "done" });
+  void record(asRagRecordParams(params)).catch((error) => {
+    logDebug(
+      `rag_record failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
 }
 
 function handleCancel(id: number, params: Record<string, unknown> | undefined): void {
@@ -136,6 +234,14 @@ async function handleMessage(message: IncomingMessage): Promise<void> {
     await handleComplete(id, message.params);
     return;
   }
+  if (method === "rag_lookup") {
+    await handleRagLookup(id, message.params);
+    return;
+  }
+  if (method === "rag_record") {
+    handleRagRecord(id, message.params);
+    return;
+  }
   if (method === "cancel") {
     handleCancel(id, message.params);
     return;
@@ -147,6 +253,8 @@ async function handleMessage(message: IncomingMessage): Promise<void> {
 if (!process.env.AI_GATEWAY_API_KEY) {
   logDebug("warning: AI_GATEWAY_API_KEY is not set");
 }
+
+void initRagService();
 
 const rl = createInterface({ input: process.stdin });
 
@@ -183,5 +291,7 @@ rl.on("close", () => {
     controller.abort();
   }
   inflight.clear();
-  process.exit(0);
+  void shutdownRag().finally(() => {
+    process.exit(0);
+  });
 });

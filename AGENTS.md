@@ -48,6 +48,10 @@ inline completion only.
   **Why:** a dead stdin pipe otherwise leaves completion permanently broken until
   restart.
 - **Prompt timeout** is enforced in Lua (`complete.prompt_timeout_ms`).
+- **Local Orama RAG** may bypass the gateway on high-confidence direct hits from
+  accepted completions (`complete.rag`). RAG lookup/record does not require an
+  API key. **Why:** repeat patterns should not pay API latency when a prior Tab
+  accept already validated the completion.
 
 ---
 
@@ -118,6 +122,10 @@ Currently pinned regression tests:
 | Cache exact hit | `cache_spec.lua::"returns exact cache hits"` |
 | Cache prefix-shift | `cache_spec.lua::"shifts a cached completion when the typed character matches"` |
 | Bounded context reads | `context_spec.lua::"reads bounded prefix lines on large buffers"` |
+| Import and header context | `context_spec.lua::"collects import lines from the top of the file"` |
+| RAG session hot ring | `rag_spec.lua::"stores recent accepted completions in the session hot ring"` |
+| RAG direct hit bypass | `complete_spec.lua::"skips the gateway on rag direct hits"` |
+| Enriched completion prompt | `complete_spec.lua::"passes enriched context fields to the completion server"` |
 | Unsaved buffer filepath | `context_spec.lua::"uses an untitled filepath for unnamed buffers"` |
 | Client stream lifecycle | `completion_client_spec.lua::"streams completion chunks and finishes cleanly"` |
 | Transport recycle | `completion_client_spec.lua::"recycles the singleton after transport disconnect"` |

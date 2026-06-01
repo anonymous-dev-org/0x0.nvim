@@ -20,7 +20,11 @@ await esbuild.build({
   outfile,
   sourcemap: false,
   minify: false,
-  external: [],
+  external: [
+    "@orama/orama",
+    "@orama/plugin-data-persistence",
+    "@xenova/transformers",
+  ],
 });
 
 console.log(`built ${outfile}`);

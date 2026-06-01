@@ -11,9 +11,20 @@ describe("inline completion", function()
 		})
 		package.loaded["zxz.complete"] = nil
 		package.loaded["zxz.complete.ghost"] = nil
+		package.loaded["zxz.complete.rag"] = nil
 		pcall(function()
 			require("zxz.core.model_catalog")._reset()
 		end)
+		local completion_client = require("zxz.core.completion_client")
+		if not completion_client._rag_lookup_stub then
+			completion_client._rag_lookup_stub = function(_request, on_result)
+				if on_result then
+					on_result({}, nil)
+				end
+			end
+		end
+		completion_client.rag_lookup = completion_client._rag_lookup_stub
+		completion_client.rag_record = function() end
 		vim.wo.virtualedit = ""
 	end)
 
@@ -134,6 +145,166 @@ describe("inline completion", function()
 		assert.are.equal("mistral/codestral", captured.request.model)
 		assert.are.equal(vim.fn.getcwd(), captured.request.cwd)
 		assert.are.equal("42", ghost.get_text())
+	end)
+
+	it("passes enriched context fields to the completion server", function()
+		local completion_client = require("zxz.core.completion_client")
+		local original_stream = completion_client.stream_completion
+		local original_rag = completion_client.rag_lookup
+		local captured
+		completion_client.rag_lookup = function(_request, on_result)
+			on_result({ examples = {} }, nil)
+		end
+		completion_client.stream_completion = function(_provider, request, on_chunk, on_done)
+			captured = { request = request }
+			on_chunk("42")
+			on_done()
+			return function() end
+		end
+
+		local complete = require("zxz.complete")
+		local bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_set_current_buf(bufnr)
+		vim.bo[bufnr].filetype = "lua"
+		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-context.lua")
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+			'local M = require("mod")',
+			"  local value = ",
+		})
+		vim.wo.virtualedit = "onemore"
+		vim.api.nvim_win_set_cursor(0, { 2, #"  local value = " })
+		complete._mode = function()
+			return "i"
+		end
+
+		complete._request_completion()
+
+		completion_client.stream_completion = original_stream
+		completion_client.rag_lookup = original_rag
+
+		assert.is_truthy(captured)
+		assert.is_not_nil(captured.request.imports)
+		assert.are.equal("  ", captured.request.indent)
+		assert.is_true(type(captured.request.examples) == "table")
+	end)
+
+	it("skips the gateway on rag direct hits", function()
+		local completion_client = require("zxz.core.completion_client")
+		local original_stream = completion_client.stream_completion
+		local original_rag = completion_client.rag_lookup
+		local streamed = false
+		completion_client.rag_lookup = function(_request, on_result)
+			on_result({ direct = "42" }, nil)
+		end
+		completion_client.stream_completion = function()
+			streamed = true
+			return function() end
+		end
+
+		local complete = require("zxz.complete")
+		local ghost = require("zxz.complete.ghost")
+		local bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_set_current_buf(bufnr)
+		vim.bo[bufnr].filetype = "lua"
+		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-rag-direct.lua")
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
+		vim.wo.virtualedit = "onemore"
+		vim.api.nvim_win_set_cursor(0, { 1, #"local value = " })
+		complete._mode = function()
+			return "i"
+		end
+
+		complete._request_completion()
+
+		completion_client.stream_completion = original_stream
+		completion_client.rag_lookup = original_rag
+
+		assert.is_false(streamed)
+		assert.are.equal("42", ghost.get_text())
+	end)
+
+	it("records accepted completions in the session hot ring", function()
+		local rag = require("zxz.complete.rag")
+		rag.clear()
+
+		local completion_client = require("zxz.core.completion_client")
+		local original_stream = completion_client.stream_completion
+		local original_rag = completion_client.rag_lookup
+		completion_client.rag_lookup = function(_request, on_result)
+			on_result({}, nil)
+		end
+		completion_client.stream_completion = function(_provider, _request, on_chunk, on_done)
+			on_chunk("42")
+			on_done()
+			return function() end
+		end
+
+		local complete = require("zxz.complete")
+		local bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_set_current_buf(bufnr)
+		vim.bo[bufnr].filetype = "lua"
+		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-rag-session.lua")
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
+		vim.wo.virtualedit = "onemore"
+		vim.api.nvim_win_set_cursor(0, { 1, #"local value = " })
+		complete._mode = function()
+			return "i"
+		end
+
+		complete._request_completion()
+		assert.is_true(complete.accept())
+
+		local hit = rag.lookup_session({
+			prefix = "local value = ",
+			suffix = "",
+			language = "lua",
+		})
+
+		completion_client.stream_completion = original_stream
+		completion_client.rag_lookup = original_rag
+
+		assert.are.equal("42", hit)
+	end)
+
+	it("forwards rag examples to the gateway prompt", function()
+		local completion_client = require("zxz.core.completion_client")
+		local original_stream = completion_client.stream_completion
+		local original_rag = completion_client.rag_lookup
+		local captured
+		completion_client.rag_lookup = function(_request, on_result)
+			on_result({
+				examples = {
+					{ prefix = "local y = ", suffix = "", completion = "1" },
+				},
+			}, nil)
+		end
+		completion_client.stream_completion = function(_provider, request, on_chunk, on_done)
+			captured = { request = request }
+			on_chunk("99")
+			on_done()
+			return function() end
+		end
+
+		local complete = require("zxz.complete")
+		local bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_set_current_buf(bufnr)
+		vim.bo[bufnr].filetype = "lua"
+		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-rag-examples.lua")
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
+		vim.wo.virtualedit = "onemore"
+		vim.api.nvim_win_set_cursor(0, { 1, #"local value = " })
+		complete._mode = function()
+			return "i"
+		end
+
+		complete._request_completion()
+
+		completion_client.stream_completion = original_stream
+		completion_client.rag_lookup = original_rag
+
+		assert.is_truthy(captured)
+		assert.are.equal(1, #captured.request.examples)
+		assert.are.equal("1", captured.request.examples[1].completion)
 	end)
 
 	it("routes the selected gateway model", function()

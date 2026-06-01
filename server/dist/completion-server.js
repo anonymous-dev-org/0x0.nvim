@@ -31069,33 +31069,84 @@ function scopeBlock(scope) {
     return null;
   }
   return [
-    `Relevant surrounding code (${scope.type ?? ""}, lines ${scope.start_line ?? ""}-${scope.end_line ?? ""}):`,
+    `Enclosing scope (${scope.type ?? "block"}, lines ${scope.start_line ?? ""}-${scope.end_line ?? ""}):`,
     scope.text
   ].join("\n");
 }
+function examplesBlock(examples) {
+  if (!Array.isArray(examples) || examples.length === 0) {
+    return null;
+  }
+  const lines = ["Recent accepted completions in this language:"];
+  for (let i = 0; i < examples.length; i += 1) {
+    const example = examples[i];
+    if (!example || typeof example !== "object") {
+      continue;
+    }
+    const prefix = typeof example.prefix === "string" ? example.prefix : "";
+    const suffix = typeof example.suffix === "string" ? example.suffix : "";
+    const completion = typeof example.completion === "string" ? example.completion : "";
+    if (prefix === "" && suffix === "" && completion === "") {
+      continue;
+    }
+    lines.push(
+      "",
+      `Example ${i + 1}:`,
+      `Before cursor: ${prefix}`,
+      `Inserted: ${completion}`,
+      `After cursor: ${suffix}`
+    );
+  }
+  return lines.length > 1 ? lines.join("\n") : null;
+}
+function cursorContext(request) {
+  const prefix = request.prefix ?? "";
+  const suffix = request.suffix ?? "";
+  const lang = request.language ?? "code";
+  const filepath = request.filepath ?? "unknown";
+  return [
+    `Cursor context (${lang}, ${filepath}):`,
+    "```",
+    `${prefix}<|cursor|>${suffix}`,
+    "```"
+  ].join("\n");
+}
 function buildPrompt(request) {
+  const lang = request.language ?? "code";
   const lines = [
-    `Return only the ${request.language ?? "code"} text to insert after this cursor.`,
-    "No tools. No search. No explanation. No markdown.",
+    `Complete ${lang} code at the cursor.`,
+    `File: ${request.filepath ?? "unknown"}`,
+    `Project root: ${request.cwd ?? "."}`,
+    "",
+    "Rules:",
+    "- Output ONLY the text to insert at <|cursor|>",
+    "- No tools, search, markdown fences, explanation, or repeated prefix",
     ""
   ];
+  if (typeof request.imports === "string" && request.imports !== "") {
+    lines.push("Imports in this file:", request.imports, "");
+  } else if (typeof request.header === "string" && request.header !== "") {
+    lines.push("File header:", request.header, "");
+  }
   const scope = scopeBlock(request.scope);
   if (scope) {
     lines.push(scope, "");
   }
-  lines.push(
-    `Code before cursor: ${request.prefix ?? ""}`,
-    "",
-    `Code after cursor: ${request.suffix ?? ""}`,
-    "",
-    "Text to insert:"
-  );
+  const examples = examplesBlock(request.examples);
+  if (examples) {
+    lines.push(examples, "");
+  }
+  lines.push(cursorContext(request), "");
+  if (typeof request.indent === "string" && request.indent !== "") {
+    lines.push(`Current line indentation: ${JSON.stringify(request.indent)}`, "");
+  }
+  lines.push("Text to insert:");
   return lines.join("\n");
 }
 function systemPrompt() {
   return [
     "You are an inline code completion engine.",
-    "Output only the text to insert at the cursor.",
+    "Output only the text to insert at the cursor marker.",
     "No markdown fences, no explanations, no repeated prefix."
   ].join(" ");
 }
@@ -31419,6 +31470,416 @@ async function listCompletionModels() {
   return models.filter(isCompletionModel).map((model) => model.id).sort((a, b) => a.localeCompare(b));
 }
 
+// src/rag/embedder.ts
+var pipelinePromise = null;
+function getEmbedder(model, cacheDir) {
+  if (!pipelinePromise) {
+    pipelinePromise = createEmbedder(model, cacheDir);
+  }
+  return pipelinePromise;
+}
+async function createEmbedder(model, cacheDir) {
+  try {
+    const { pipeline, env } = await import("@xenova/transformers");
+    if (cacheDir) {
+      env.cacheDir = cacheDir;
+    }
+    const extractor = await pipeline("feature-extraction", model, {
+      quantized: true
+    });
+    let ready = false;
+    const embedder = {
+      get ready() {
+        return ready;
+      },
+      async warmup() {
+        await embedder.embed("warmup");
+        ready = true;
+      },
+      async embed(text2) {
+        if (!text2.trim()) {
+          return null;
+        }
+        try {
+          const output = await extractor(text2, {
+            pooling: "mean",
+            normalize: true
+          });
+          const data = output.data;
+          return Array.from(data);
+        } catch {
+          return null;
+        }
+      }
+    };
+    return embedder;
+  } catch (error51) {
+    process.stderr.write(
+      `[0x0-completion] embedder unavailable: ${error51 instanceof Error ? error51.message : String(error51)}
+`
+    );
+    return null;
+  }
+}
+
+// src/rag/lookup.ts
+import { search } from "@orama/orama";
+
+// src/rag/store.ts
+import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { dirname } from "node:path";
+import { create, insert, remove } from "@orama/orama";
+import { persist, restore } from "@orama/plugin-data-persistence";
+
+// src/rag/manifest.ts
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+function manifestPath(indexPath) {
+  return `${indexPath}.manifest.json`;
+}
+function loadManifest(indexPath) {
+  const path = manifestPath(indexPath);
+  if (!existsSync(path)) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+function saveManifest(indexPath, entries) {
+  writeFileSync(manifestPath(indexPath), JSON.stringify(entries, null, 0));
+}
+
+// src/rag/store.ts
+var SCHEMA = {
+  id: "string",
+  language: "string",
+  filepath: "string",
+  prefix: "string",
+  suffix: "string",
+  completion: "string",
+  context: "string",
+  context_hash: "string",
+  accepted_at: "number",
+  embedding: "vector[384]"
+};
+var nextId = 1;
+var persistTimer = null;
+function exactKey(contextHash2, language) {
+  return `${language}\0${contextHash2}`;
+}
+function applyManifest(manifest, exactIndex) {
+  exactIndex.clear();
+  for (const entry of manifest) {
+    exactIndex.set(exactKey(entry.context_hash, entry.language), {
+      completion: entry.completion,
+      suffix: entry.suffix
+    });
+    const numeric = Number.parseInt(entry.id, 10);
+    if (!Number.isNaN(numeric) && numeric >= nextId) {
+      nextId = numeric + 1;
+    }
+  }
+}
+async function openStore(config2) {
+  const dir = dirname(config2.indexPath);
+  if (!existsSync2(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  let db;
+  const exactIndex = /* @__PURE__ */ new Map();
+  let manifest = loadManifest(config2.indexPath);
+  if (existsSync2(config2.indexPath)) {
+    try {
+      const raw = readFileSync2(config2.indexPath);
+      db = await restore("binary", raw);
+    } catch (error51) {
+      process.stderr.write(
+        `[0x0-completion] rag restore failed, creating fresh index: ${error51 instanceof Error ? error51.message : String(error51)}
+`
+      );
+      db = await create({ schema: SCHEMA });
+      manifest = [];
+    }
+  } else {
+    db = await create({ schema: SCHEMA });
+    manifest = [];
+  }
+  applyManifest(manifest, exactIndex);
+  const store = {
+    db,
+    exactIndex,
+    manifest,
+    schedulePersist() {
+      if (persistTimer) {
+        clearTimeout(persistTimer);
+      }
+      persistTimer = setTimeout(() => {
+        persistTimer = null;
+        void store.flushPersist();
+      }, config2.persistDebounceMs);
+    },
+    async flushPersist() {
+      if (persistTimer) {
+        clearTimeout(persistTimer);
+        persistTimer = null;
+      }
+      try {
+        const binary = await persist(db, "binary");
+        writeFileSync2(config2.indexPath, binary);
+        saveManifest(config2.indexPath, store.manifest);
+      } catch (error51) {
+        process.stderr.write(
+          `[0x0-completion] rag persist failed: ${error51 instanceof Error ? error51.message : String(error51)}
+`
+        );
+      }
+    },
+    async close() {
+      await store.flushPersist();
+    }
+  };
+  return store;
+}
+async function insertDocument(store, doc) {
+  await insert(store.db, doc);
+  store.exactIndex.set(exactKey(doc.context_hash, doc.language), {
+    completion: doc.completion,
+    suffix: doc.suffix
+  });
+  store.manifest.push({
+    id: doc.id,
+    context_hash: doc.context_hash,
+    language: doc.language,
+    suffix: doc.suffix,
+    completion: doc.completion,
+    accepted_at: doc.accepted_at
+  });
+  store.schedulePersist();
+}
+function lookupExact(store, contextHash2, language) {
+  return store.exactIndex.get(exactKey(contextHash2, language)) ?? null;
+}
+async function pruneOldest(store, maxEntries) {
+  if (store.manifest.length <= maxEntries) {
+    return;
+  }
+  const sorted = [...store.manifest].sort((a, b) => a.accepted_at - b.accepted_at);
+  const toRemove = sorted.slice(0, store.manifest.length - maxEntries);
+  for (const entry of toRemove) {
+    await remove(store.db, entry.id);
+    store.exactIndex.delete(exactKey(entry.context_hash, entry.language));
+  }
+  const removeIds = new Set(toRemove.map((entry) => entry.id));
+  store.manifest = store.manifest.filter((entry) => !removeIds.has(entry.id));
+  store.schedulePersist();
+}
+function nextDocumentId() {
+  const id = String(nextId);
+  nextId += 1;
+  return id;
+}
+
+// src/rag/types.ts
+var PREFIX_TAIL = 200;
+var SUFFIX_HEAD = 200;
+function trimField(text2, maxChars) {
+  if (text2.length <= maxChars) {
+    return text2;
+  }
+  if (maxChars <= 3) {
+    return text2.slice(-maxChars);
+  }
+  const tailLen = maxChars - 3;
+  return "..." + text2.slice(-tailLen);
+}
+function contextHash(prefix, suffix, language) {
+  const p = prefix.slice(-PREFIX_TAIL);
+  const s = suffix.slice(0, SUFFIX_HEAD);
+  return `${p}\0${s}\0${language}`;
+}
+function buildContext(prefix, suffix, scope) {
+  const parts = [prefix.slice(-PREFIX_TAIL), suffix.slice(0, SUFFIX_HEAD)];
+  if (scope?.text) {
+    parts.push(scope.text.slice(-300));
+  }
+  return parts.join("\n");
+}
+
+// src/rag/lookup.ts
+async function ragLookup(store, embedder, params) {
+  const prefix = params.prefix ?? "";
+  const suffix = params.suffix ?? "";
+  const language = params.language ?? "";
+  if (language === "") {
+    return {};
+  }
+  const hash2 = contextHash(prefix, suffix, language);
+  const exact = lookupExact(store, hash2, language);
+  if (exact) {
+    return { direct: { completion: exact.completion } };
+  }
+  const directThreshold = params.direct_hit_threshold ?? 0.92;
+  const exampleThreshold = params.example_threshold ?? 0.75;
+  const maxExamples = params.max_examples ?? 3;
+  const context2 = buildContext(prefix, suffix, params.scope);
+  let queryVector = null;
+  if (embedder?.ready) {
+    queryVector = await embedder.embed(context2);
+  }
+  if (!queryVector) {
+    const textResults = await search(store.db, {
+      term: context2.slice(-200),
+      where: { language: { eq: language } },
+      limit: maxExamples
+    });
+    const examples2 = textResults.hits.map((hit) => hit.document).filter((doc) => doc.completion).slice(0, maxExamples).map(toExample);
+    return examples2.length > 0 ? { examples: examples2 } : {};
+  }
+  const results = await search(store.db, {
+    mode: "hybrid",
+    term: context2.slice(-200),
+    vector: {
+      value: queryVector,
+      property: "embedding"
+    },
+    where: { language: { eq: language } },
+    limit: maxExamples + 1,
+    similarity: exampleThreshold,
+    hybridWeights: { text: 0.4, vector: 0.6 }
+  });
+  if (results.hits.length === 0) {
+    return {};
+  }
+  const top = results.hits[0];
+  const topDoc = top.document;
+  const topScore = top.score ?? 0;
+  if (topScore >= directThreshold && topDoc.suffix === suffix && topDoc.completion) {
+    return { direct: { completion: topDoc.completion } };
+  }
+  const examples = results.hits.filter((hit) => (hit.score ?? 0) >= exampleThreshold).slice(0, maxExamples).map((hit) => toExample(hit.document));
+  return examples.length > 0 ? { examples } : {};
+}
+function toExample(doc) {
+  return {
+    prefix: doc.prefix,
+    suffix: doc.suffix,
+    completion: doc.completion
+  };
+}
+
+// src/rag/record.ts
+async function ragRecord(store, embedder, params) {
+  const language = params.language ?? "";
+  const completion = params.completion ?? "";
+  const prefix = params.prefix ?? "";
+  const suffix = params.suffix ?? "";
+  if (language === "" || completion === "") {
+    return;
+  }
+  const maxFieldChars = params.max_field_chars ?? 300;
+  const maxEntries = params.max_entries ?? 5e3;
+  const trimmedPrefix = trimField(prefix, maxFieldChars);
+  const trimmedSuffix = trimField(suffix, maxFieldChars);
+  const trimmedCompletion = trimField(completion, maxFieldChars);
+  const context2 = buildContext(prefix, suffix, params.scope);
+  const hash2 = contextHash(prefix, suffix, language);
+  let embedding = new Array(384).fill(0);
+  if (embedder) {
+    const vector = await embedder.embed(context2);
+    if (vector && vector.length === 384) {
+      embedding = vector;
+    }
+  }
+  const doc = {
+    id: nextDocumentId(),
+    language,
+    filepath: params.filepath ?? "",
+    prefix: trimmedPrefix,
+    suffix: trimmedSuffix,
+    completion: trimmedCompletion,
+    context: context2,
+    context_hash: hash2,
+    accepted_at: Date.now(),
+    embedding
+  };
+  await insertDocument(store, doc);
+  await pruneOldest(store, maxEntries);
+}
+
+// src/rag/service.ts
+var storePromise = null;
+var embedderPromise = null;
+var configRef = null;
+function defaultConfig() {
+  const indexPath = process.env.ZXZ_RAG_INDEX_PATH ?? `${process.env.HOME ?? "/tmp"}/.local/state/nvim/0x0/rag.msp`;
+  return {
+    indexPath,
+    cacheDir: process.env.ZXZ_TRANSFORMERS_CACHE,
+    embeddingModel: process.env.ZXZ_EMBEDDING_MODEL ?? "Xenova/all-MiniLM-L6-v2",
+    maxEntries: 5e3,
+    maxFieldChars: 300,
+    directHitThreshold: 0.92,
+    exampleThreshold: 0.75,
+    maxExamples: 3,
+    persistDebounceMs: 500,
+    warmupOnStart: process.env.ZXZ_RAG_WARMUP !== "0"
+  };
+}
+async function initRagService(config2) {
+  const base = defaultConfig();
+  configRef = { ...base, ...config2 };
+  storePromise = openStore(configRef);
+  embedderPromise = getEmbedder(configRef.embeddingModel, configRef.cacheDir);
+  if (configRef.warmupOnStart) {
+    void embedderPromise.then((embedder) => {
+      if (embedder) {
+        void embedder.warmup();
+      }
+    });
+  }
+}
+async function getStore() {
+  if (!storePromise) {
+    await initRagService();
+  }
+  return storePromise;
+}
+async function getEmbedderInstance() {
+  if (!embedderPromise) {
+    await initRagService();
+  }
+  return embedderPromise ?? null;
+}
+async function lookup(params) {
+  const store = await getStore();
+  const embedder = await getEmbedderInstance();
+  return ragLookup(store, embedder, {
+    ...params,
+    direct_hit_threshold: params.direct_hit_threshold ?? configRef?.directHitThreshold,
+    example_threshold: params.example_threshold ?? configRef?.exampleThreshold,
+    max_examples: params.max_examples ?? configRef?.maxExamples
+  });
+}
+async function record2(params) {
+  const store = await getStore();
+  const embedder = await getEmbedderInstance();
+  await ragRecord(store, embedder, {
+    ...params,
+    max_entries: params.max_entries ?? configRef?.maxEntries,
+    max_field_chars: params.max_field_chars ?? configRef?.maxFieldChars
+  });
+}
+async function shutdownRag() {
+  if (storePromise) {
+    const store = await storePromise;
+    await store.close();
+    storePromise = null;
+  }
+}
+
 // src/index.ts
 var inflight = /* @__PURE__ */ new Map();
 function writeMessage(message) {
@@ -31431,19 +31892,61 @@ function logDebug(message) {
 }
 function asCompleteParams(params) {
   const scope = params?.scope;
+  const examples = params?.examples;
   return {
     model: String(params?.model ?? ""),
     prefix: typeof params?.prefix === "string" ? params.prefix : "",
     suffix: typeof params?.suffix === "string" ? params.suffix : "",
     language: typeof params?.language === "string" ? params.language : void 0,
     filepath: typeof params?.filepath === "string" ? params.filepath : void 0,
+    cwd: typeof params?.cwd === "string" ? params.cwd : void 0,
+    header: typeof params?.header === "string" ? params.header : void 0,
+    imports: typeof params?.imports === "string" ? params.imports : void 0,
+    indent: typeof params?.indent === "string" ? params.indent : void 0,
     max_tokens: typeof params?.max_tokens === "number" ? params.max_tokens : void 0,
     temperature: typeof params?.temperature === "number" ? params.temperature : void 0,
+    examples: Array.isArray(examples) ? examples.filter((entry) => typeof entry === "object" && entry !== null).map((entry) => ({
+      prefix: typeof entry.prefix === "string" ? entry.prefix : void 0,
+      suffix: typeof entry.suffix === "string" ? entry.suffix : void 0,
+      completion: typeof entry.completion === "string" ? entry.completion : void 0
+    })) : void 0,
     scope: scope && typeof scope === "object" ? {
       type: typeof scope.type === "string" ? scope.type : void 0,
       text: typeof scope.text === "string" ? scope.text : void 0,
       start_line: typeof scope.start_line === "number" ? scope.start_line : void 0,
       end_line: typeof scope.end_line === "number" ? scope.end_line : void 0
+    } : void 0
+  };
+}
+function asRagLookupParams(params) {
+  const scope = params?.scope;
+  return {
+    prefix: typeof params?.prefix === "string" ? params.prefix : "",
+    suffix: typeof params?.suffix === "string" ? params.suffix : "",
+    language: typeof params?.language === "string" ? params.language : "",
+    filepath: typeof params?.filepath === "string" ? params.filepath : void 0,
+    direct_hit_threshold: typeof params?.direct_hit_threshold === "number" ? params.direct_hit_threshold : void 0,
+    example_threshold: typeof params?.example_threshold === "number" ? params.example_threshold : void 0,
+    max_examples: typeof params?.max_examples === "number" ? params.max_examples : void 0,
+    scope: scope && typeof scope === "object" ? {
+      type: typeof scope.type === "string" ? scope.type : void 0,
+      text: typeof scope.text === "string" ? scope.text : void 0
+    } : void 0
+  };
+}
+function asRagRecordParams(params) {
+  const scope = params?.scope;
+  return {
+    prefix: typeof params?.prefix === "string" ? params.prefix : "",
+    suffix: typeof params?.suffix === "string" ? params.suffix : "",
+    language: typeof params?.language === "string" ? params.language : "",
+    filepath: typeof params?.filepath === "string" ? params.filepath : void 0,
+    completion: typeof params?.completion === "string" ? params.completion : "",
+    max_entries: typeof params?.max_entries === "number" ? params.max_entries : void 0,
+    max_field_chars: typeof params?.max_field_chars === "number" ? params.max_field_chars : void 0,
+    scope: scope && typeof scope === "object" ? {
+      type: typeof scope.type === "string" ? scope.type : void 0,
+      text: typeof scope.text === "string" ? scope.text : void 0
     } : void 0
   };
 }
@@ -31477,6 +31980,29 @@ async function handleComplete(id, params) {
   } finally {
     inflight.delete(id);
   }
+}
+async function handleRagLookup(id, params) {
+  try {
+    const result = await lookup(asRagLookupParams(params));
+    writeMessage({
+      id,
+      event: "rag",
+      direct: result.direct,
+      examples: result.examples
+    });
+    writeMessage({ id, event: "done" });
+  } catch (error51) {
+    const message = error51 instanceof Error ? error51.message : String(error51);
+    writeMessage({ id, event: "error", message, code: "rag_lookup_failed" });
+  }
+}
+function handleRagRecord(id, params) {
+  writeMessage({ id, event: "done" });
+  void record2(asRagRecordParams(params)).catch((error51) => {
+    logDebug(
+      `rag_record failed: ${error51 instanceof Error ? error51.message : String(error51)}`
+    );
+  });
 }
 function handleCancel(id, params) {
   const target = params?.target;
@@ -31519,6 +32045,14 @@ async function handleMessage(message) {
     await handleComplete(id, message.params);
     return;
   }
+  if (method === "rag_lookup") {
+    await handleRagLookup(id, message.params);
+    return;
+  }
+  if (method === "rag_record") {
+    handleRagRecord(id, message.params);
+    return;
+  }
   if (method === "cancel") {
     handleCancel(id, message.params);
     return;
@@ -31528,6 +32062,7 @@ async function handleMessage(message) {
 if (!process.env.AI_GATEWAY_API_KEY) {
   logDebug("warning: AI_GATEWAY_API_KEY is not set");
 }
+void initRagService();
 var rl = createInterface({ input: process.stdin });
 rl.on("line", (line) => {
   const trimmed = line.trim();
@@ -31559,5 +32094,7 @@ rl.on("close", () => {
     controller.abort();
   }
   inflight.clear();
-  process.exit(0);
+  void shutdownRag().finally(() => {
+    process.exit(0);
+  });
 });

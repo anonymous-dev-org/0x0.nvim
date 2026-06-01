@@ -9,6 +9,7 @@ local model_catalog = require("zxz.core.model_catalog")
 local ghost = require("zxz.complete.ghost")
 local debounce = require("zxz.complete.debounce")
 local cache = require("zxz.complete.cache")
+local rag = require("zxz.complete.rag")
 local log = require("zxz.core.log")
 
 local function format_err(err)
@@ -153,8 +154,47 @@ local _request_id = 0
 ---@type { bufnr: integer, row: integer, col: integer, before: string }|nil
 local _inflight = nil
 
+---@type { prefix: string, suffix: string, language: string, scope: table|nil, filepath: string|nil }|nil
+local _last_suggestion = nil
+
 local function clear_inflight()
 	_inflight = nil
+end
+
+local function remember_suggestion(ctx)
+	if type(ctx) ~= "table" then
+		return
+	end
+	_last_suggestion = {
+		prefix = ctx.prefix or "",
+		suffix = ctx.suffix or "",
+		language = ctx.language or "",
+		scope = ctx.scope,
+		filepath = ctx.filepath,
+	}
+end
+
+local function clear_suggestion()
+	_last_suggestion = nil
+end
+
+local function completion_request(ctx, cwd, model, cfg, rag_examples)
+	return {
+		prefix = ctx.prefix,
+		suffix = ctx.suffix,
+		language = ctx.language,
+		filepath = ctx.filepath,
+		cursor = ctx.cursor,
+		scope = ctx.scope,
+		header = ctx.header,
+		imports = ctx.imports,
+		indent = ctx.indent,
+		cwd = cwd,
+		examples = rag_examples or {},
+		max_tokens = cfg.max_tokens,
+		temperature = cfg.temperature,
+		model = model,
+	}
 end
 
 local function inflight_matches(bufnr, before)
@@ -324,15 +364,26 @@ function M._on_text_changed()
 		end
 	end
 
+	local ctx = context.gather()
+
 	if cfg.cache.enabled then
-		local ctx = context.gather()
 		local cached = cache.get_or_shift(ctx.prefix, ctx.suffix, ctx.language)
 		if cached then
 			debug_log("cache hit")
 			M._cancel_request_only()
+			remember_suggestion(ctx)
 			ghost.show(bufnr, row - 1, col, cached)
 			return
 		end
+	end
+
+	local session_hit = rag.lookup_session(ctx)
+	if session_hit then
+		debug_log("rag session hit")
+		M._cancel_request_only()
+		remember_suggestion(ctx)
+		ghost.show(bufnr, row - 1, col, session_hit)
+		return
 	end
 
 	if inflight_matches(bufnr, before) then
@@ -373,14 +424,8 @@ function M._request_completion()
 		return
 	end
 	local cwd = project_cwd()
-	local model = resolve_model()
-	if not model then
-		debug_log("request aborted: model resolution failed")
-		return
-	end
 	debug_log(
-		("request start model=%s file=%s line=%s col=%s prefix_chars=%d suffix_chars=%d scope=%s"):format(
-			tostring(model),
+		("request start file=%s line=%s col=%s prefix_chars=%d suffix_chars=%d scope=%s"):format(
 			tostring(ctx.filepath),
 			tostring(ctx.cursor and ctx.cursor.line or "?"),
 			tostring(ctx.cursor and ctx.cursor.column or "?"),
@@ -395,94 +440,135 @@ function M._request_completion()
 		local cached = cache.get_or_shift(ctx.prefix, ctx.suffix, ctx.language)
 		if cached then
 			debug_log("request cache hit")
+			remember_suggestion(ctx)
 			ghost.show(bufnr, row, col, cached)
 			return
 		end
 	end
 
+	local session_hit = rag.lookup_session(ctx)
+	if session_hit then
+		debug_log("rag session hit")
+		remember_suggestion(ctx)
+		ghost.show(bufnr, row, col, session_hit)
+		return
+	end
+
+	remember_suggestion(ctx)
+
 	_request_id = _request_id + 1
 	local request_id = _request_id
-	_streaming_text = ""
-	_visible_text = ""
-	local first_chunk_logged = false
-	_inflight = {
-		bufnr = bufnr,
-		row = row,
-		col = col,
-		before = before,
-	}
 
-	_abort_fn = client.stream_completion(nil, {
-		prefix = ctx.prefix,
-		suffix = ctx.suffix,
-		language = ctx.language,
-		filepath = ctx.filepath,
-		cursor = ctx.cursor,
-		scope = ctx.scope,
-		cwd = cwd,
-		max_tokens = cfg.max_tokens,
-		temperature = cfg.temperature,
-		model = model,
-	}, function(chunk)
+	local function start_gateway(rag_examples)
 		if request_id ~= _request_id then
 			return
 		end
-		-- On each text chunk
-		_streaming_text = _streaming_text .. chunk
-		if not first_chunk_logged then
-			first_chunk_logged = true
-			debug_log("first chunk request_id=" .. tostring(request_id) .. " text=" .. preview(chunk, 160))
-		end
-
-		-- Check we're still in insert mode in the same buffer and position.
 		if M._mode() ~= "i" or vim.api.nvim_get_current_buf() ~= bufnr then
-			debug_log("cancel: mode/buffer changed during stream")
-			M._cancel()
 			return
 		end
 
 		local cur = vim.api.nvim_win_get_cursor(0)
 		if cur[1] - 1 ~= row or cur[2] ~= col then
-			debug_log("cancel: cursor moved during stream")
-			M._cancel()
 			return
 		end
 
-		local display = visible_completion(_streaming_text, before)
-		if not display then
+		local model = resolve_model()
+		if not model then
+			debug_log("request aborted: model resolution failed")
 			return
 		end
-		_visible_text = display
-		ghost.show(bufnr, row, col, display)
-	end, function(err)
+		debug_log("request gateway model=" .. tostring(model))
+
+		_streaming_text = ""
+		_visible_text = ""
+		local first_chunk_logged = false
+		_inflight = {
+			bufnr = bufnr,
+			row = row,
+			col = col,
+			before = before,
+		}
+
+		_abort_fn = client.stream_completion(
+			nil,
+			completion_request(ctx, cwd, model, cfg, rag_examples),
+			function(chunk)
+				if request_id ~= _request_id then
+					return
+				end
+				_streaming_text = _streaming_text .. chunk
+				if not first_chunk_logged then
+					first_chunk_logged = true
+					debug_log("first chunk request_id=" .. tostring(request_id) .. " text=" .. preview(chunk, 160))
+				end
+
+				if M._mode() ~= "i" or vim.api.nvim_get_current_buf() ~= bufnr then
+					debug_log("cancel: mode/buffer changed during stream")
+					M._cancel()
+					return
+				end
+
+				local current = vim.api.nvim_win_get_cursor(0)
+				if current[1] - 1 ~= row or current[2] ~= col then
+					debug_log("cancel: cursor moved during stream")
+					M._cancel()
+					return
+				end
+
+				local display = visible_completion(_streaming_text, before)
+				if not display then
+					return
+				end
+				_visible_text = display
+				ghost.show(bufnr, row, col, display)
+			end,
+			function(err)
+				if request_id ~= _request_id then
+					return
+				end
+				_abort_fn = nil
+				clear_inflight()
+
+				if err then
+					local msg = format_err(err)
+					log.warn("complete: stream failed: " .. msg)
+					vim.schedule(function()
+						vim.notify("0x0 completion failed: " .. msg, vim.log.levels.WARN)
+					end)
+					return
+				end
+				debug_log(
+					("request done request_id=%s streamed_chars=%d visible_chars=%d visible=%s"):format(
+						tostring(request_id),
+						#_streaming_text,
+						#_visible_text,
+						preview(_visible_text, 120)
+					)
+				)
+
+				if cfg.cache.enabled and _visible_text ~= "" then
+					local key = cache.make_key(ctx.prefix, ctx.suffix, ctx.language)
+					cache.set(key, _visible_text)
+				end
+			end
+		)
+	end
+
+	rag.lookup(ctx, function(result, err)
 		if request_id ~= _request_id then
 			return
 		end
-		_abort_fn = nil
-		clear_inflight()
-
 		if err then
-			local msg = format_err(err)
-			log.warn("complete: stream failed: " .. msg)
-			vim.schedule(function()
-				vim.notify("0x0 completion failed: " .. msg, vim.log.levels.WARN)
-			end)
+			debug_log("rag lookup failed: " .. format_err(err))
+			start_gateway(nil)
 			return
 		end
-		debug_log(
-			("request done request_id=%s streamed_chars=%d visible_chars=%d visible=%s"):format(
-				tostring(request_id),
-				#_streaming_text,
-				#_visible_text,
-				preview(_visible_text, 120)
-			)
-		)
-
-		-- Cache the result
-		if cfg.cache.enabled and _visible_text ~= "" then
-			local key = cache.make_key(ctx.prefix, ctx.suffix, ctx.language)
-			cache.set(key, _visible_text)
+		if result and type(result.direct) == "string" and result.direct ~= "" then
+			debug_log("rag direct hit")
+			ghost.show(bufnr, row, col, result.direct)
+			return
 		end
+		start_gateway(result and result.examples)
 	end)
 end
 
@@ -491,6 +577,7 @@ function M._cancel()
 	debounce.stop()
 	_request_id = _request_id + 1
 	clear_inflight()
+	clear_suggestion()
 	if _abort_fn then
 		_abort_fn()
 		_abort_fn = nil
@@ -514,7 +601,19 @@ end
 ---@return boolean
 function M.accept()
 	if ghost.is_visible() then
+		local text = ghost.get_text()
+		if _last_suggestion and type(text) == "string" and text ~= "" then
+			rag.record(
+				_last_suggestion.prefix,
+				_last_suggestion.suffix,
+				_last_suggestion.language,
+				text,
+				_last_suggestion.scope,
+				_last_suggestion.filepath
+			)
+		end
 		M._cancel_request_only()
+		clear_suggestion()
 		return ghost.accept()
 	end
 	return false
