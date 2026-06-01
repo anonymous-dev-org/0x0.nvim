@@ -11,28 +11,8 @@ function M.state_dir()
 	return join(vim.fn.stdpath("state"), "0x0")
 end
 
-function M.history_dir()
-	return join(M.state_dir(), "history")
-end
-
-function M.runs_dir()
-	return join(M.state_dir(), "runs")
-end
-
 function M.log_path()
 	return join(M.state_dir(), "debug.log")
-end
-
-function M.complete_dir()
-	return join(M.state_dir(), "complete")
-end
-
-function M.chat_db_path()
-	return join(M.state_dir(), "chat.sqlite")
-end
-
-function M.git_ref_prefix()
-	return "refs/0x0/checkpoints/"
 end
 
 local _migrated = false

@@ -3,10 +3,14 @@
 
 local M = {}
 
---- Maximum lines to include in prefix/suffix.
-local MAX_PREFIX_LINES = 1500
-local MAX_SUFFIX_LINES = 500
-local MAX_SCOPE_LINES = 300
+--- Maximum context to include around the cursor. Inline completion has to stay
+--- fast; large prompts make ACP providers miss the short prompt timeout.
+local MAX_PREFIX_LINES = 120
+local MAX_SUFFIX_LINES = 80
+local MAX_SCOPE_LINES = 120
+local MAX_PREFIX_CHARS = 4000
+local MAX_SUFFIX_CHARS = 2000
+local MAX_SCOPE_CHARS = 4000
 
 local SCOPE_TYPE_MARKERS = {
 	"function",
@@ -32,6 +36,22 @@ local function is_scope_node(node_type)
 		end
 	end
 	return false
+end
+
+local function trim_start(text, max_chars)
+	text = text or ""
+	if #text <= max_chars then
+		return text
+	end
+	return text:sub(#text - max_chars + 1)
+end
+
+local function trim_end(text, max_chars)
+	text = text or ""
+	if #text <= max_chars then
+		return text
+	end
+	return text:sub(1, max_chars)
 end
 
 local function gather_scope(bufnr, row, col)
@@ -80,12 +100,13 @@ local function gather_scope(bufnr, row, col)
 	if #lines == 0 then
 		return nil
 	end
+	local text = trim_start(table.concat(lines, "\n"), MAX_SCOPE_CHARS)
 
 	return {
 		type = scope:type(),
 		start_line = start_row + 1,
 		end_line = end_row + 1,
-		text = table.concat(lines, "\n"),
+		text = text,
 	}
 end
 
@@ -110,7 +131,7 @@ function M.gather()
 		prefix_parts[i] = prefix_lines[i]
 	end
 	prefix_parts[#prefix_parts + 1] = before_cursor
-	local prefix = table.concat(prefix_parts, "\n")
+	local prefix = trim_start(table.concat(prefix_parts, "\n"), MAX_PREFIX_CHARS)
 
 	local suffix_end = math.min(total, row + MAX_SUFFIX_LINES)
 	local suffix_parts = { after_cursor }
@@ -120,7 +141,7 @@ function M.gather()
 			suffix_parts[#suffix_parts + 1] = tail[i]
 		end
 	end
-	local suffix = table.concat(suffix_parts, "\n")
+	local suffix = trim_end(table.concat(suffix_parts, "\n"), MAX_SUFFIX_CHARS)
 
 	local filetype = vim.bo[bufnr].filetype
 	local filepath = vim.api.nvim_buf_get_name(bufnr)

@@ -1,5 +1,6 @@
 describe("test harness", function()
 	it("loads all surviving zxz modules from runtimepath", function()
+		assert.are.equal(require("zxz"), require("0x0"))
 		assert.is_truthy(require("zxz"))
 		assert.is_truthy(require("zxz.complete"))
 		assert.is_truthy(require("zxz.complete.ghost"))

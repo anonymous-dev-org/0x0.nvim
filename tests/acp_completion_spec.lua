@@ -2,25 +2,6 @@ describe("acp inline completion lifecycle", function()
 	local acp_client
 	local config
 
-	local function with_transport_stub(stub, fn)
-		local original_client = package.loaded["zxz.core.acp_client"]
-		local original_transport = package.loaded["zxz.core.acp_transport"]
-
-		package.loaded["zxz.core.acp_client"] = nil
-		package.loaded["zxz.core.acp_transport"] = stub
-
-		local ok, err = pcall(function()
-			fn(require("zxz.core.acp_client"))
-		end)
-
-		package.loaded["zxz.core.acp_client"] = original_client
-		package.loaded["zxz.core.acp_transport"] = original_transport
-
-		if not ok then
-			error(err)
-		end
-	end
-
 	local function make_fake_client(overrides)
 		overrides = overrides or {}
 		local calls = {
@@ -28,6 +9,8 @@ describe("acp inline completion lifecycle", function()
 			close = {},
 			set_config = {},
 			set_model = {},
+			stop = 0,
+			subscribe = {},
 			unsubscribe = {},
 			prompt_blocks = {},
 			prompt_opts = {},
@@ -68,6 +51,12 @@ describe("acp inline completion lifecycle", function()
 				if overrides.prompt_hangs then
 					return self:request("session/prompt", { sessionId = session_id, prompt = blocks }, callback, opts)
 				end
+				if overrides.prompt_error then
+					vim.schedule(function()
+						callback(nil, overrides.prompt_error)
+					end)
+					return 99
+				end
 				vim.schedule(function()
 					callback({}, nil)
 				end)
@@ -87,7 +76,9 @@ describe("acp inline completion lifecycle", function()
 				end)
 				return 100 + #calls.set_config
 			end,
-			subscribe = function() end,
+			subscribe = function(_, sid, handlers)
+				calls.subscribe[#calls.subscribe + 1] = { session_id = sid, handlers = handlers }
+			end,
 			unsubscribe = function(_, sid)
 				calls.unsubscribe[#calls.unsubscribe + 1] = sid
 			end,
@@ -103,6 +94,10 @@ describe("acp inline completion lifecycle", function()
 				if client:supports_session_close() then
 					calls.close[#calls.close + 1] = sid
 				end
+			end,
+			stop = function(self)
+				calls.stop = calls.stop + 1
+				self.state = "disconnected"
 			end,
 			forget_request = function(self, id)
 				self.callbacks[id] = nil
@@ -152,38 +147,6 @@ describe("acp inline completion lifecycle", function()
 		assert.is_true(vim.wait(500, function()
 			return callback_called
 		end))
-	end)
-
-	it("leaves the macOS sleep guard disabled by default", function()
-		local captured_opts
-		with_transport_stub({
-			create = function(_, _, opts)
-				captured_opts = opts
-				return {}
-			end,
-		}, function(under_test)
-			config.setup({})
-			under_test.new({ command = "fake", name = "fake" })
-		end)
-
-		assert.is_false(captured_opts.sleep_guard)
-	end)
-
-	it("enables the macOS sleep guard only when configured", function()
-		local captured_opts
-		with_transport_stub({
-			create = function(_, _, opts)
-				captured_opts = opts
-				return {}
-			end,
-		}, function(under_test)
-			config.setup({
-				sleep_guard = true,
-			})
-			under_test.new({ command = "fake", name = "fake" })
-		end)
-
-		assert.is_true(captured_opts.sleep_guard)
 	end)
 
 	it("close_session sends session/close request when advertised", function()
@@ -450,6 +413,27 @@ describe("acp inline completion lifecycle", function()
 		assert.is_truthy(prompt:find("<suffix>\n\nprint(value)", 1, true))
 	end)
 
+	it("does not install permission handlers for completion sessions", function()
+		local fake_client, calls = make_fake_client({ prompt_hangs = true })
+		acp_client._set_client_factory(function()
+			return fake_client
+		end)
+
+		local abort = acp_client.stream_completion({ command = "fake" }, {
+			prefix = "local value = ",
+			suffix = "",
+			cwd = "/tmp",
+		}, function() end, function() end)
+
+		assert.is_true(vim.wait(500, function()
+			return #calls.subscribe > 0
+		end))
+		abort()
+
+		assert.are.equal("sess-test", calls.subscribe[1].session_id)
+		assert.is_nil(calls.subscribe[1].handlers.on_request_permission)
+	end)
+
 	it("passes prompt_timeout_ms to session/prompt requests", function()
 		local fake_client, calls = make_fake_client()
 		acp_client._set_client_factory(function()
@@ -468,6 +452,80 @@ describe("acp inline completion lifecycle", function()
 		abort()
 
 		assert.are.same({ timeout_ms = 50 }, calls.prompt_opts[1])
+	end)
+
+	it("uses a fail-fast default timeout for session/prompt requests", function()
+		config.setup({})
+		local fake_client, calls = make_fake_client()
+		acp_client._set_client_factory(function()
+			return fake_client
+		end)
+
+		local abort = acp_client.stream_completion({ command = "fake" }, {
+			prefix = "local x = ",
+			suffix = "",
+			cwd = "/tmp",
+		}, function() end, function() end)
+
+		assert.is_true(vim.wait(500, function()
+			return #calls.prompt_opts > 0
+		end))
+		abort()
+
+		assert.are.same({ timeout_ms = 3000 }, calls.prompt_opts[1])
+	end)
+
+	it("recycles the singleton client after a prompt timeout", function()
+		local timeout_err = {
+			code = -32001,
+			message = "request timed out",
+			data = { method = "session/prompt" },
+		}
+		local first_client, first_calls = make_fake_client({ prompt_error = timeout_err })
+		local second_client, second_calls = make_fake_client()
+		local factory_calls = 0
+		acp_client._set_client_factory(function()
+			factory_calls = factory_calls + 1
+			if factory_calls == 1 then
+				return first_client
+			end
+			return second_client
+		end)
+
+		local done_err = "pending"
+		local abort = acp_client.stream_completion({ command = "fake" }, {
+			prefix = "local x = ",
+			suffix = "",
+			cwd = "/tmp",
+		}, function() end, function(err)
+			done_err = err
+		end)
+
+		assert.is_true(vim.wait(500, function()
+			return done_err ~= "pending"
+		end))
+		abort()
+
+		assert.are.same(timeout_err, done_err)
+		assert.are.equal(1, first_calls.stop)
+
+		done_err = "pending"
+		abort = acp_client.stream_completion({ command = "fake" }, {
+			prefix = "local y = ",
+			suffix = "",
+			cwd = "/tmp",
+		}, function() end, function(err)
+			done_err = err
+		end)
+
+		assert.is_true(vim.wait(500, function()
+			return done_err ~= "pending"
+		end))
+		abort()
+
+		assert.is_nil(done_err)
+		assert.are.equal(2, factory_calls)
+		assert.are.equal(1, #second_calls.prompt_opts)
 	end)
 
 	it("times out hung session/prompt requests", function()

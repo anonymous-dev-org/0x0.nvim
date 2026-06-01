@@ -140,9 +140,6 @@ local M = {}
 ---@type fun()? Current request abort function
 local _abort_fn = nil
 
----@type string? Last cache key used
-local _last_cache_key = nil
-
 ---@type string Accumulated completion text from streaming
 local _streaming_text = ""
 
@@ -311,12 +308,11 @@ function M._on_text_changed()
 
 	if cfg.cache.enabled then
 		local ctx = context.gather()
-		local cached, key = cache.get_or_shift(ctx.prefix, ctx.suffix, ctx.language)
+		local cached = cache.get_or_shift(ctx.prefix, ctx.suffix, ctx.language)
 		if cached then
-			debug_log("cache hit key=" .. tostring(key))
+			debug_log("cache hit")
 			M._cancel_request_only()
 			ghost.show(bufnr, row - 1, col, cached)
-			_last_cache_key = key
 			return
 		end
 	end
@@ -374,11 +370,10 @@ function M._request_completion()
 
 	-- Check cache
 	if cfg.cache.enabled then
-		local cached, key = cache.get_or_shift(ctx.prefix, ctx.suffix, ctx.language)
+		local cached = cache.get_or_shift(ctx.prefix, ctx.suffix, ctx.language)
 		if cached then
-			debug_log("request cache hit key=" .. tostring(key))
+			debug_log("request cache hit")
 			ghost.show(bufnr, row, col, cached)
-			_last_cache_key = key
 			return
 		end
 	end
@@ -458,7 +453,6 @@ function M._request_completion()
 		if cfg.cache.enabled and _visible_text ~= "" then
 			local key = cache.make_key(ctx.prefix, ctx.suffix, ctx.language)
 			cache.set(key, _visible_text)
-			_last_cache_key = key
 		end
 	end)
 end
@@ -478,9 +472,6 @@ end
 
 --- Dismiss the current completion suggestion.
 function M.dismiss()
-	if ghost.is_visible() and _last_cache_key then
-		cache.log_outcome("dismiss", _last_cache_key)
-	end
 	M._cancel()
 end
 
@@ -494,9 +485,6 @@ end
 function M.accept()
 	if ghost.is_visible() then
 		M._cancel_request_only()
-		if _last_cache_key then
-			cache.log_outcome("accept", _last_cache_key)
-		end
 		return ghost.accept()
 	end
 	return false

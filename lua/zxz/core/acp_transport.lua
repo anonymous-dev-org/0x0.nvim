@@ -31,51 +31,17 @@ local function build_env(overrides)
 	return list
 end
 
-local function sleep_guard_available()
-	return vim.fn.has("mac") == 1 and vim.fn.executable("caffeinate") == 1
-end
-
-local function start_sleep_guard(pid, name)
-	if not pid or pid <= 0 or not sleep_guard_available() then
-		return nil
-	end
-
-	local guard_handle
-	local ok, handle, err = pcall(uv.spawn, "caffeinate", {
-		args = { "-i", "-w", tostring(pid) },
-		detached = false,
-	}, function(code, _signal)
-		if guard_handle and not guard_handle:is_closing() then
-			guard_handle:close()
-		end
-		if code ~= 0 then
-			log.debug(("acp[%s]: caffeinate exited with code %d"):format(name, code))
-		end
-	end)
-
-	if not ok or not handle then
-		log.warn(("acp[%s]: failed to start caffeinate: %s"):format(name, tostring(handle or err)))
-		return nil
-	end
-
-	guard_handle = handle
-	log.debug(("acp[%s]: caffeinate guarding pid %d"):format(name, pid))
-	return handle
-end
-
 ---@param config { command: string, args?: string[], env?: table<string, string>, ignore_stderr_patterns?: string[] }
 ---@param callbacks { on_state: fun(state: string), on_message: fun(msg: table), on_exit?: fun(code: integer, stderr: string[]), on_idle?: fun(ms: integer) }
----@param opts? { idle_kill_ms?: integer, sleep_guard?: boolean }
+---@param opts? { idle_kill_ms?: integer }
 function M.create(config, callbacks, opts)
 	opts = opts or {}
 	local idle_kill_ms = opts.idle_kill_ms or 0
-	local sleep_guard_enabled = opts.sleep_guard == true
 	local self = {
 		stdin = nil,
 		stdout = nil,
 		process = nil,
 		process_pid = nil,
-		sleep_guard = nil,
 		idle_timer = nil,
 		idle_armed = false,
 	}
@@ -85,19 +51,6 @@ function M.create(config, callbacks, opts)
 			self.idle_timer:stop()
 			self.idle_timer:close()
 			self.idle_timer = nil
-		end
-	end
-
-	local function stop_sleep_guard()
-		if self.sleep_guard and not self.sleep_guard:is_closing() then
-			local p = self.sleep_guard
-			self.sleep_guard = nil
-			pcall(function()
-				p:kill(15)
-			end)
-			p:close()
-		else
-			self.sleep_guard = nil
 		end
 	end
 
@@ -134,11 +87,7 @@ function M.create(config, callbacks, opts)
 		self.idle_armed = armed and true or false
 		if not self.idle_armed then
 			stop_idle_timer()
-			stop_sleep_guard()
 		else
-			if sleep_guard_enabled and (not self.sleep_guard or self.sleep_guard:is_closing()) and self.process_pid then
-				self.sleep_guard = start_sleep_guard(self.process_pid, config.name or config.command)
-			end
 			bump_idle()
 		end
 	end
@@ -185,7 +134,6 @@ function M.create(config, callbacks, opts)
 				self.process = nil
 				self.process_pid = nil
 			end
-			stop_sleep_guard()
 		end)
 
 		if not ok or not handle then
@@ -276,7 +224,6 @@ function M.create(config, callbacks, opts)
 			p:close()
 		end
 		self.process_pid = nil
-		stop_sleep_guard()
 		if self.stdin then
 			self.stdin:close()
 			self.stdin = nil

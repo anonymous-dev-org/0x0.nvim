@@ -225,7 +225,6 @@ function M.new(provider, opts)
 		end,
 	}, {
 		idle_kill_ms = config.current.idle_kill_ms or 0,
-		sleep_guard = config.current.sleep_guard == true,
 	})
 
 	return self
@@ -673,7 +672,7 @@ function Client:_initialize_with_retry(attempt)
 	local max = config.current.initialize_retries or 3
 	self:request("initialize", {
 		protocolVersion = self.protocol_version,
-		clientInfo = { name = "0x0.nvim", version = "7.0.2" },
+		clientInfo = { name = "0x0.nvim", version = "7.0.3" },
 		clientCapabilities = {
 			fs = {
 				readTextFile = self.host_fs,
@@ -831,9 +830,8 @@ end
 
 -- ---------------------------------------------------------------------------
 -- Inline completion: lightweight wrapper around new()/start()/new_session()
--- for ghost-text completion. Differs from a chat session in two ways:
---   1. Permission requests are auto-approved (silent ghost text UX).
---   2. The client is a per-provider singleton, separate from chat clients.
+-- for ghost-text completion. Completion sessions are context-only and use a
+-- per-provider singleton client so providers are not respawned on every key.
 -- ---------------------------------------------------------------------------
 
 local _completion_clients = {}
@@ -857,6 +855,24 @@ end
 
 local function _completion_key(provider)
 	return tostring(provider.command) .. "\0" .. table.concat(provider.args or {}, "\1")
+end
+
+local function _discard_completion_client(provider, client, reason)
+	local key = _completion_key(provider)
+	local entry = _completion_clients[key]
+	if not entry or entry.client ~= client then
+		return
+	end
+	completion_debug(
+		"client discard provider=%s key=%s reason=%s",
+		provider_label(provider),
+		display_key(key),
+		tostring(reason or "")
+	)
+	_completion_clients[key] = nil
+	pcall(function()
+		client:stop()
+	end)
 end
 
 local function _flush_completion_waiters(entry, client, err)
@@ -944,29 +960,6 @@ local function _get_completion_client(provider, on_ready)
 	return client
 end
 
-local COMPLETION_SAFE_TOOL_KINDS = {
-	read = true,
-	search = true,
-	list = true,
-	inspect = true,
-}
-
-local function _choose_completion_permission(params)
-	params = params or {}
-	local tool_call = params and params.toolCall or {}
-	local kind = tostring(tool_call.kind or params.kind or ""):lower()
-	if not COMPLETION_SAFE_TOOL_KINDS[kind] then
-		return nil
-	end
-	for _, kind in ipairs({ "allow_once", "allow_always" }) do
-		for _, opt in ipairs(params.options or {}) do
-			if opt.kind == kind then
-				return opt.optionId
-			end
-		end
-	end
-end
-
 local function _model_config_option(config_options)
 	for _, option in ipairs(config_options or {}) do
 		if
@@ -1047,6 +1040,14 @@ local function _model_option_summary(option)
 	)
 end
 
+local function _is_prompt_timeout(err)
+	return type(err) == "table"
+		and err.code == -32001
+		and err.message == "request timed out"
+		and type(err.data) == "table"
+		and err.data.method == "session/prompt"
+end
+
 local function _scope_block(scope)
 	if type(scope) ~= "table" or type(scope.text) ~= "string" or scope.text == "" then
 		return nil
@@ -1104,8 +1105,8 @@ local function _completion_prompt(request)
 	return table.concat(lines, "\n")
 end
 
----Stream an inline completion. Completion sessions are read-only: they do not
----expose host fs and only select harmless read-style permission options.
+---Stream an inline completion. Completion sessions are context-only: they do
+---not expose host fs and do not install permission handlers.
 ---@param provider { command: string, args?: string[], auth_method?: string, name?: string }
 ---@param request { prefix: string, suffix: string, language?: string, filepath?: string, model?: string }
 ---@param on_chunk fun(text: string)
@@ -1189,6 +1190,7 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 		if done then
 			return
 		end
+		local prompt_timed_out = _is_prompt_timeout(err)
 		done = true
 		active = false
 		completion_debug(
@@ -1204,8 +1206,14 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 		)
 		forget_pending_requests()
 		if session_id and client_ref then
+			if prompt_timed_out then
+				client_ref:cancel(session_id)
+			end
 			client_ref:unsubscribe(session_id)
 			close_session()
+		end
+		if prompt_timed_out and client_ref then
+			_discard_completion_client(provider, client_ref, "session/prompt timeout")
 		end
 		vim.schedule(function()
 			on_done(err)
@@ -1286,22 +1294,6 @@ function M.stream_completion(provider, request, on_chunk, on_done)
 							end
 						end)
 					end
-				end,
-				on_request_permission = function(params, respond)
-					params = params or {}
-					local allow = nil
-					if config.current.complete and config.current.complete.allow_read_tools then
-						allow = _choose_completion_permission(params)
-					end
-					local tool_call = params and params.toolCall or {}
-					completion_debug(
-						"permission request session=%s tool=%s kind=%s allow=%s",
-						tostring(session_id),
-						tostring(tool_call.name or params.toolName or ""),
-						tostring(tool_call.kind or params.kind or ""),
-						tostring(allow or "")
-					)
-					respond(allow or "")
 				end,
 			})
 			completion_debug("session subscribed session=%s", tostring(session_id))

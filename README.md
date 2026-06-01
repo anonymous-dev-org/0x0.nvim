@@ -37,6 +37,10 @@ Ghost text streams from the model connected to `complete.model` as you type,
 with caching and debouncing. `:ZxzCompleteSettings` lets users toggle
 completion and pick the model. `:ZxzLog` opens the debug log.
 
+Completion sessions are context-only: 0x0 inlines the visible buffer context in
+the prompt, does not expose host filesystem handlers, and cancels provider tool
+permission requests.
+
 ### nvim-cmp coexistence
 
 The default accept key is `<Tab>`, which conflicts with nvim-cmp. When using
@@ -47,14 +51,13 @@ yourself.
 ## Configuration
 
 - **`complete.*`** — completion settings (model, debounce, cache, keymaps,
-  timeouts). See `lua/zxz/core/config.lua` for defaults.
+  timeouts). Inline prompts fail fast by default (`prompt_timeout_ms = 3000`);
+  see `lua/zxz/core/config.lua` for the full defaults.
 - **`complete.model`** — user-facing model name. Provider routing is derived
   internally. When an ACP provider advertises a model config option for the
   session, 0x0 matches this value against the provider's option `value` or
   display `name`, then sends the option `value` with `session/set_config_option`.
 - **`complete.models`** — model names shown by `:ZxzCompleteSettings`.
-- **`sleep_guard`** — opt-in macOS `caffeinate` guard while ACP requests are
-  active. Defaults to `false`; the provider process is spawned directly.
 
 Thinking/reasoning model variants are filtered out for completion, because
 ghost text must be insertable code rather than assistant preamble.

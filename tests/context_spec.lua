@@ -22,6 +22,22 @@ describe("completion context", function()
 		assert.is_not_nil(ctx.prefix:find("LINE3999", 1, true))
 	end)
 
+	it("keeps suffix context small for inline prompts", function()
+		local bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_set_current_buf(bufnr)
+		local lines = { "local x = " }
+		for i = 1, 500 do
+			lines[#lines + 1] = "SUFFIX" .. i
+		end
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+		vim.api.nvim_win_set_cursor(0, { 1, #"local x = " })
+
+		local ctx = context.gather()
+
+		assert.is_not_nil(ctx.suffix:find("SUFFIX80", 1, true))
+		assert.is_nil(ctx.suffix:find("SUFFIX200", 1, true))
+	end)
+
 	it("uses an untitled filepath for unnamed buffers", function()
 		local bufnr = vim.api.nvim_create_buf(false, true)
 		vim.api.nvim_set_current_buf(bufnr)
