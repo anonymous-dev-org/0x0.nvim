@@ -5,6 +5,7 @@ local config = require("zxz.core.config")
 local context = require("zxz.complete.context")
 local client = require("zxz.core.completion_client")
 local gateway_auth = require("zxz.core.gateway_auth")
+local model_catalog = require("zxz.core.model_catalog")
 local ghost = require("zxz.complete.ghost")
 local debounce = require("zxz.complete.debounce")
 local cache = require("zxz.complete.cache")
@@ -209,6 +210,10 @@ function M.setup(opts)
 		config.current.complete = vim.tbl_deep_extend("force", vim.deepcopy(config.current.complete), opts)
 	end
 	local cfg = config.current.complete
+
+	if config.gateway_ready() then
+		model_catalog.refresh()
+	end
 
 	if cfg.cache.enabled then
 		cache.init(cfg.cache.max_entries)
@@ -535,19 +540,33 @@ function M.toggle()
 end
 
 local function choose_model()
-	local choices = config.completion_model_choices()
-	vim.ui.select(choices, {
-		prompt = "0x0 completion model",
-		format_item = function(model)
-			return model
-		end,
-	}, function(choice)
-		if not choice then
+	local function show_picker()
+		local choices = config.completion_model_choices()
+		if #choices == 0 then
+			vim.notify("0x0 completion: no models available yet", vim.log.levels.WARN)
 			return
 		end
-		config.current.complete.model = choice
-		M.dismiss()
-	end)
+		vim.ui.select(choices, {
+			prompt = "0x0 completion model",
+			format_item = function(model)
+				return model
+			end,
+		}, function(choice)
+			if not choice then
+				return
+			end
+			config.current.complete.model = choice
+			M.dismiss()
+		end)
+	end
+
+	if config.gateway_ready() then
+		model_catalog.refresh(function()
+			show_picker()
+		end)
+	else
+		show_picker()
+	end
 end
 
 local function api_key_label()

@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline";
 import { runComplete } from "./complete.ts";
+import { listCompletionModels } from "./models.ts";
 import type { CompleteParams } from "./prompt.ts";
 
 type IncomingMessage = {
@@ -12,7 +13,8 @@ type OutgoingMessage =
   | { id: number; event: "chunk"; text: string }
   | { id: number; event: "done" }
   | { id: number; event: "error"; message: string; code?: string }
-  | { id: number; event: "pong" };
+  | { id: number; event: "pong" }
+  | { id: number; event: "models"; models: string[] };
 
 const inflight = new Map<number, AbortController>();
 
@@ -104,6 +106,16 @@ function handleCancel(id: number, params: Record<string, unknown> | undefined): 
   writeMessage({ id, event: "done" });
 }
 
+async function handleListModels(id: number): Promise<void> {
+  try {
+    const models = await listCompletionModels();
+    writeMessage({ id, event: "models", models });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    writeMessage({ id, event: "error", message, code: "list_models_failed" });
+  }
+}
+
 async function handleMessage(message: IncomingMessage): Promise<void> {
   const id = message.id;
   if (typeof id !== "number") {
@@ -114,6 +126,10 @@ async function handleMessage(message: IncomingMessage): Promise<void> {
   const method = message.method ?? "";
   if (method === "ping") {
     writeMessage({ id, event: "pong" });
+    return;
+  }
+  if (method === "list_models") {
+    await handleListModels(id);
     return;
   }
   if (method === "complete") {

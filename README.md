@@ -74,9 +74,10 @@ yourself.
   key (default: `AI_GATEWAY_API_KEY`). Used when no saved key exists.
 - **`complete.gateway.api_key`** — optional direct API key override.
 - **`complete.temperature`**, **`complete.max_tokens`** — passed to
-  `streamText`. Defaults favor completion latency and determinism:
-  `temperature = 0`, `max_tokens = 128`.
-- **`complete.models`** — model ids shown by `:ZxzCompleteSettings`.
+  `streamText` (defaults: `temperature = 0`, `max_tokens = 64`). The server also
+  disables thinking/reasoning and uses minimum effort per provider.
+- **`complete.models`** — refreshed from AI Gateway when an API key is available;
+  shown by `:ZxzCompleteSettings`.
 
 Thinking/reasoning model variants are filtered out for completion, because
 ghost text must be insertable code rather than assistant preamble.

@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "node esbuild.config.mjs",
-    "test": "node --experimental-strip-types --test src/prompt.test.ts"
+    "test": "node --experimental-strip-types --test src/*.test.ts"
   },
   "dependencies": {
     "ai": "^6.0.0"

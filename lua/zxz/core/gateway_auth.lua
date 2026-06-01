@@ -71,6 +71,9 @@ function M.set_api_key(api_key)
 	pcall(function()
 		require("zxz.core.completion_client").stop_server()
 	end)
+	pcall(function()
+		require("zxz.core.model_catalog").refresh()
+	end)
 	return true
 end
 

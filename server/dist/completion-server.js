@@ -31099,14 +31099,51 @@ function systemPrompt() {
   ].join(" ");
 }
 
+// src/provider_options.ts
+var THINKING_MARKERS = ["thinking", "reasoning"];
+function providerName(modelId) {
+  return modelId.split("/")[0]?.toLowerCase() ?? "";
+}
+function completionProviderOptions(modelId) {
+  const provider = providerName(modelId);
+  const options = {};
+  if (provider === "anthropic") {
+    options.anthropic = {
+      thinking: { type: "disabled" },
+      effort: "low"
+    };
+    return options;
+  }
+  if (provider === "openai") {
+    options.openai = {
+      reasoningEffort: "none"
+    };
+    return options;
+  }
+  if (provider === "google") {
+    options.google = {
+      thinkingConfig: {
+        thinkingBudget: 0
+      }
+    };
+    return options;
+  }
+  if (THINKING_MARKERS.some((marker21) => modelId.toLowerCase().includes(marker21))) {
+    return options;
+  }
+  return options;
+}
+
 // src/complete.ts
+var DEFAULT_MAX_OUTPUT_TOKENS = 64;
 async function runComplete(params, onDelta, signal) {
   const result = streamText({
     model: params.model,
     system: systemPrompt(),
     prompt: buildPrompt(params),
-    maxOutputTokens: params.max_tokens ?? 128,
+    maxOutputTokens: params.max_tokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
     temperature: params.temperature ?? 0,
+    providerOptions: completionProviderOptions(params.model),
     abortSignal: signal,
     onChunk({ chunk }) {
       if (chunk.type === "text-delta") {
@@ -31115,6 +31152,35 @@ async function runComplete(params, onDelta, signal) {
     }
   });
   await result.text;
+}
+
+// src/models.ts
+var THINKING_MARKERS2 = ["thinking", "reasoning"];
+var THINKING_DENYLIST = /* @__PURE__ */ new Set(["o3"]);
+function isThinkingModel(id, name21) {
+  const lowerId = id.toLowerCase();
+  if (THINKING_DENYLIST.has(lowerId) || THINKING_DENYLIST.has(lowerId.split("/").pop() ?? "")) {
+    return true;
+  }
+  for (const marker21 of THINKING_MARKERS2) {
+    if (lowerId.includes(marker21)) {
+      return true;
+    }
+    if (name21 && name21.toLowerCase().includes(marker21)) {
+      return true;
+    }
+  }
+  return false;
+}
+function isCompletionModel(model) {
+  if (model.modelType && model.modelType !== "language") {
+    return false;
+  }
+  return !isThinkingModel(model.id, model.name);
+}
+async function listCompletionModels() {
+  const metadata = await gateway.getAvailableModels();
+  return metadata.models.filter(isCompletionModel).map((model) => model.id).sort((a, b) => a.localeCompare(b));
 }
 
 // src/index.ts
@@ -31189,6 +31255,15 @@ function handleCancel(id, params) {
   }
   writeMessage({ id, event: "done" });
 }
+async function handleListModels(id) {
+  try {
+    const models = await listCompletionModels();
+    writeMessage({ id, event: "models", models });
+  } catch (error51) {
+    const message = error51 instanceof Error ? error51.message : String(error51);
+    writeMessage({ id, event: "error", message, code: "list_models_failed" });
+  }
+}
 async function handleMessage(message) {
   const id = message.id;
   if (typeof id !== "number") {
@@ -31198,6 +31273,10 @@ async function handleMessage(message) {
   const method = message.method ?? "";
   if (method === "ping") {
     writeMessage({ id, event: "pong" });
+    return;
+  }
+  if (method === "list_models") {
+    await handleListModels(id);
     return;
   }
   if (method === "complete") {

@@ -72,7 +72,11 @@ end
 
 local function fail_pending(entry, err)
 	for id, pending in pairs(entry.pending or {}) do
-		if pending.on_done then
+		if pending.on_models then
+			vim.schedule(function()
+				pending.on_models(nil, err)
+			end)
+		elseif pending.on_done then
 			vim.schedule(function()
 				pending.on_done(err)
 			end)
@@ -201,6 +205,13 @@ local function get_server(on_ready)
 				end)
 				return
 			end
+			if message.event == "models" and type(message.models) == "table" and pending.on_models then
+				entry.pending[id] = nil
+				vim.schedule(function()
+					pending.on_models(message.models, nil)
+				end)
+				return
+			end
 			if message.event == "done" then
 				entry.pending[id] = nil
 				if pending.on_done then
@@ -212,9 +223,14 @@ local function get_server(on_ready)
 			end
 			if message.event == "error" then
 				entry.pending[id] = nil
-				if pending.on_done then
+				local err = { message = tostring(message.message or "completion failed") }
+				if pending.on_models then
 					vim.schedule(function()
-						pending.on_done({ message = tostring(message.message or "completion failed") })
+						pending.on_models(nil, err)
+					end)
+				elseif pending.on_done then
+					vim.schedule(function()
+						pending.on_done(err)
 					end)
 				end
 			end
@@ -366,6 +382,50 @@ function M.stream_completion(_provider, request, on_chunk, on_done)
 	end)
 
 	return abort
+end
+
+---@param on_done fun(models: string[]|nil, err?: any)
+function M.list_models(on_done)
+	if not config.gateway_ready() then
+		if on_done then
+			vim.schedule(function()
+				on_done(nil, { message = "AI Gateway API key required" })
+			end)
+		end
+		return
+	end
+
+	get_server(function(entry, err)
+		if not entry then
+			if on_done then
+				vim.schedule(function()
+					on_done(nil, err or { message = "completion server unavailable" })
+				end)
+			end
+			return
+		end
+
+		local request_id = _next_request_id + 1
+		_next_request_id = request_id
+		entry.pending[request_id] = {
+			on_models = on_done,
+		}
+
+		entry.transport:set_idle_armed(true)
+		local sent = send_message(entry, {
+			id = request_id,
+			method = "list_models",
+		})
+		if not sent then
+			entry.pending[request_id] = nil
+			discard_server(entry, "send failed")
+			if on_done then
+				vim.schedule(function()
+					on_done(nil, { message = "transport disconnected" })
+				end)
+			end
+		end
+	end)
 end
 
 function M.stop_server()

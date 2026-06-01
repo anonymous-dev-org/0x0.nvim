@@ -25,6 +25,10 @@ function M.plugin_root()
 	return join(vim.fn.stdpath("data"), "0x0")
 end
 
+function M.gateway_models_path()
+	return join(M.state_dir(), "models.json")
+end
+
 function M.gateway_key_path()
 	return join(M.state_dir(), "gateway.json")
 end

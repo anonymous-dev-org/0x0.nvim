@@ -12,11 +12,6 @@ local THINKING_MODEL_DENYLIST = {
 
 local DEFAULT_COMPLETION_MODELS = {
 	"mistral/codestral",
-	"anthropic/claude-sonnet-4.6",
-	"anthropic/claude-haiku-4.5",
-	"openai/gpt-5.4-mini",
-	"google/gemini-2.5-flash",
-	"deepseek/deepseek-v4-flash",
 }
 
 ---@type zxz.Config
@@ -31,7 +26,7 @@ M.defaults = {
 			api_key_env = "AI_GATEWAY_API_KEY",
 		},
 		debounce_ms = 300,
-		max_tokens = 128,
+		max_tokens = 64,
 		temperature = 0,
 		prompt_timeout_ms = 10000,
 		trigger_on_cursor_moved = false,
@@ -95,7 +90,7 @@ end
 
 ---@return string[]
 function M.completion_model_choices()
-	local complete = M.current.complete or {}
+	local catalog = require("zxz.core.model_catalog")
 	local choices = {}
 	local seen = {}
 
@@ -107,7 +102,7 @@ function M.completion_model_choices()
 		seen[model] = true
 	end
 
-	for _, model in ipairs(complete.models or {}) do
+	for _, model in ipairs(catalog.get_models()) do
 		add(model)
 	end
 

@@ -11,6 +11,9 @@ describe("inline completion", function()
 		})
 		package.loaded["zxz.complete"] = nil
 		package.loaded["zxz.complete.ghost"] = nil
+		pcall(function()
+			require("zxz.core.model_catalog")._reset()
+		end)
 		vim.wo.virtualedit = ""
 	end)
 
@@ -330,6 +333,16 @@ describe("inline completion", function()
 	end)
 
 	it("model choices expose gateway model ids", function()
+		config.setup({
+			complete = {
+				gateway = { api_key = "test-key" },
+				models = {
+					"mistral/codestral",
+					"anthropic/claude-sonnet-4.6",
+					"openai/gpt-5.4-mini",
+				},
+			},
+		})
 		local choices = config.completion_model_choices()
 		local seen = {}
 		for _, choice in ipairs(choices) do

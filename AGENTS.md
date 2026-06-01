@@ -73,9 +73,12 @@ inline completion only.
 - **`complete.*`** — completion-specific settings (model, debounce, cache,
   keymaps, timeouts).
 - **`complete.model`** is the user-facing gateway model id (`provider/model`).
-- **`complete.temperature = 0` and `complete.max_tokens = 128`** keep inline
-  completion deterministic and short.
-- **Thinking/reasoning model variants must not be exposed for completion.**
+- **`complete.temperature = 0` and `complete.max_tokens = 64`** keep inline
+  completion deterministic and short. The server disables provider thinking/reasoning
+  and uses minimum effort where supported.
+- **`complete.models`** is populated from AI Gateway via `list_models` and cached
+  under `stdpath('state')/0x0/models.json`. `:ZxzCompleteSettings` refreshes the
+  catalog when picking a model. Thinking/reasoning variants are filtered out.
   **Why:** those variants can leak assistant preambles such as "Let me think
   about this" into ghost text.
 
@@ -100,6 +103,8 @@ Currently pinned regression tests:
 | Nofile buffer gate | `complete_spec.lua::"does not request completions for nofile buffers"` |
 | Model routing + prefix strip | `complete_spec.lua::"uses the resolved model and drops repeated prefix text"` |
 | Gateway model routing | `complete_spec.lua::"routes the selected gateway model"` |
+| Model catalog refresh | `model_catalog_spec.lua::"stores gateway language models for selection"` |
+| Provider no-thinking options | `provider_options.test.ts::"disables thinking for anthropic and openai models"` |
 | Thinking model filtering | `complete_spec.lua::"filters thinking models from completion choices"` |
 | Thinking preamble suppression | `complete_spec.lua::"does not render thinking preambles as ghost text"` |
 | Thinking model fallback | `complete_spec.lua::"falls back from thinking model names before requesting"` |
