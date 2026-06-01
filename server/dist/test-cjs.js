@@ -1,17 +1,11 @@
-import { createRequire } from 'module'; const require = createRequire(import.meta.url);
+"use strict";
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
-  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
-}) : x)(function(x) {
-  if (typeof require !== "undefined") return require.apply(this, arguments);
-  throw Error('Dynamic require of "' + x + '" is not supported');
-});
-var __commonJS = (cb, mod) => function __require2() {
+var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
 var __export = (target, all) => {
@@ -37,7 +31,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 
 // node_modules/@vercel/oidc/dist/get-context.js
 var require_get_context = __commonJS({
-  "node_modules/@vercel/oidc/dist/get-context.js"(exports, module) {
+  "node_modules/@vercel/oidc/dist/get-context.js"(exports2, module2) {
     "use strict";
     var __defProp3 = Object.defineProperty;
     var __getOwnPropDesc2 = Object.getOwnPropertyDescriptor;
@@ -61,7 +55,7 @@ var require_get_context = __commonJS({
       SYMBOL_FOR_REQ_CONTEXT: () => SYMBOL_FOR_REQ_CONTEXT,
       getContext: () => getContext3
     });
-    module.exports = __toCommonJS(get_context_exports);
+    module2.exports = __toCommonJS(get_context_exports);
     var SYMBOL_FOR_REQ_CONTEXT = Symbol.for("@vercel/request-context");
     function getContext3() {
       const fromSymbol = globalThis;
@@ -72,7 +66,7 @@ var require_get_context = __commonJS({
 
 // node_modules/@vercel/oidc/dist/token-error.js
 var require_token_error = __commonJS({
-  "node_modules/@vercel/oidc/dist/token-error.js"(exports, module) {
+  "node_modules/@vercel/oidc/dist/token-error.js"(exports2, module2) {
     "use strict";
     var __defProp3 = Object.defineProperty;
     var __getOwnPropDesc2 = Object.getOwnPropertyDescriptor;
@@ -95,7 +89,7 @@ var require_token_error = __commonJS({
     __export3(token_error_exports, {
       VercelOidcTokenError: () => VercelOidcTokenError
     });
-    module.exports = __toCommonJS(token_error_exports);
+    module2.exports = __toCommonJS(token_error_exports);
     var VercelOidcTokenError = class extends Error {
       constructor(message, cause) {
         super(message);
@@ -114,7 +108,7 @@ var require_token_error = __commonJS({
 
 // node_modules/@vercel/oidc/dist/token-io.js
 var require_token_io = __commonJS({
-  "node_modules/@vercel/oidc/dist/token-io.js"(exports, module) {
+  "node_modules/@vercel/oidc/dist/token-io.js"(exports2, module2) {
     "use strict";
     var __create2 = Object.create;
     var __defProp3 = Object.defineProperty;
@@ -148,10 +142,10 @@ var require_token_io = __commonJS({
       findRootDir: () => findRootDir,
       getUserDataDir: () => getUserDataDir
     });
-    module.exports = __toCommonJS(token_io_exports);
-    var import_path = __toESM2(__require("path"));
-    var import_fs = __toESM2(__require("fs"));
-    var import_os = __toESM2(__require("os"));
+    module2.exports = __toCommonJS(token_io_exports);
+    var import_path = __toESM2(require("path"));
+    var import_fs = __toESM2(require("fs"));
+    var import_os = __toESM2(require("os"));
     var import_token_error = require_token_error();
     function findRootDir() {
       try {
@@ -193,7 +187,7 @@ var require_token_io = __commonJS({
 
 // node_modules/@vercel/oidc/dist/auth-config.js
 var require_auth_config = __commonJS({
-  "node_modules/@vercel/oidc/dist/auth-config.js"(exports, module) {
+  "node_modules/@vercel/oidc/dist/auth-config.js"(exports2, module2) {
     "use strict";
     var __create2 = Object.create;
     var __defProp3 = Object.defineProperty;
@@ -228,9 +222,9 @@ var require_auth_config = __commonJS({
       readAuthConfig: () => readAuthConfig,
       writeAuthConfig: () => writeAuthConfig
     });
-    module.exports = __toCommonJS(auth_config_exports);
-    var fs = __toESM2(__require("fs"));
-    var path = __toESM2(__require("path"));
+    module2.exports = __toCommonJS(auth_config_exports);
+    var fs = __toESM2(require("fs"));
+    var path = __toESM2(require("path"));
     var import_token_util = require_token_util();
     function getAuthConfigPath() {
       const dataDir = (0, import_token_util.getVercelDataDir)();
@@ -278,7 +272,7 @@ var require_auth_config = __commonJS({
 
 // node_modules/@vercel/oidc/dist/oauth.js
 var require_oauth = __commonJS({
-  "node_modules/@vercel/oidc/dist/oauth.js"(exports, module) {
+  "node_modules/@vercel/oidc/dist/oauth.js"(exports2, module2) {
     "use strict";
     var __defProp3 = Object.defineProperty;
     var __getOwnPropDesc2 = Object.getOwnPropertyDescriptor;
@@ -302,8 +296,8 @@ var require_oauth = __commonJS({
       processTokenResponse: () => processTokenResponse,
       refreshTokenRequest: () => refreshTokenRequest
     });
-    module.exports = __toCommonJS(oauth_exports);
-    var import_os = __require("os");
+    module2.exports = __toCommonJS(oauth_exports);
+    var import_os = require("os");
     var VERCEL_ISSUER = "https://vercel.com";
     var VERCEL_CLI_CLIENT_ID = "cl_HYyOPBNtFMfHhaUn9L4QPfTZz6TP47bp";
     var userAgent = `@vercel/oidc node-${process.version} ${(0, import_os.platform)()} (${(0, import_os.arch)()}) ${(0, import_os.hostname)()}`;
@@ -367,7 +361,7 @@ var require_oauth = __commonJS({
 
 // node_modules/@vercel/oidc/dist/auth-errors.js
 var require_auth_errors = __commonJS({
-  "node_modules/@vercel/oidc/dist/auth-errors.js"(exports, module) {
+  "node_modules/@vercel/oidc/dist/auth-errors.js"(exports2, module2) {
     "use strict";
     var __defProp3 = Object.defineProperty;
     var __getOwnPropDesc2 = Object.getOwnPropertyDescriptor;
@@ -391,7 +385,7 @@ var require_auth_errors = __commonJS({
       AccessTokenMissingError: () => AccessTokenMissingError2,
       RefreshAccessTokenFailedError: () => RefreshAccessTokenFailedError2
     });
-    module.exports = __toCommonJS(auth_errors_exports);
+    module2.exports = __toCommonJS(auth_errors_exports);
     var AccessTokenMissingError2 = class extends Error {
       constructor() {
         super(
@@ -411,7 +405,7 @@ var require_auth_errors = __commonJS({
 
 // node_modules/@vercel/oidc/dist/token-util.js
 var require_token_util = __commonJS({
-  "node_modules/@vercel/oidc/dist/token-util.js"(exports, module) {
+  "node_modules/@vercel/oidc/dist/token-util.js"(exports2, module2) {
     "use strict";
     var __create2 = Object.create;
     var __defProp3 = Object.defineProperty;
@@ -452,9 +446,9 @@ var require_token_util = __commonJS({
       loadToken: () => loadToken,
       saveToken: () => saveToken
     });
-    module.exports = __toCommonJS(token_util_exports);
-    var path = __toESM2(__require("path"));
-    var fs = __toESM2(__require("fs"));
+    module2.exports = __toCommonJS(token_util_exports);
+    var path = __toESM2(require("path"));
+    var fs = __toESM2(require("fs"));
     var import_token_error = require_token_error();
     var import_token_io = require_token_io();
     var import_auth_config = require_auth_config();
@@ -607,7 +601,7 @@ var require_token_util = __commonJS({
 
 // node_modules/@vercel/oidc/dist/token.js
 var require_token = __commonJS({
-  "node_modules/@vercel/oidc/dist/token.js"(exports, module) {
+  "node_modules/@vercel/oidc/dist/token.js"(exports2, module2) {
     "use strict";
     var __defProp3 = Object.defineProperty;
     var __getOwnPropDesc2 = Object.getOwnPropertyDescriptor;
@@ -630,7 +624,7 @@ var require_token = __commonJS({
     __export3(token_exports, {
       refreshToken: () => refreshToken
     });
-    module.exports = __toCommonJS(token_exports);
+    module2.exports = __toCommonJS(token_exports);
     var import_token_error = require_token_error();
     var import_token_util = require_token_util();
     async function refreshToken(options) {
@@ -669,7 +663,7 @@ var require_token = __commonJS({
 
 // node_modules/@vercel/oidc/dist/get-vercel-oidc-token.js
 var require_get_vercel_oidc_token = __commonJS({
-  "node_modules/@vercel/oidc/dist/get-vercel-oidc-token.js"(exports, module) {
+  "node_modules/@vercel/oidc/dist/get-vercel-oidc-token.js"(exports2, module2) {
     "use strict";
     var __defProp3 = Object.defineProperty;
     var __getOwnPropDesc2 = Object.getOwnPropertyDescriptor;
@@ -693,7 +687,7 @@ var require_get_vercel_oidc_token = __commonJS({
       getVercelOidcToken: () => getVercelOidcToken3,
       getVercelOidcTokenSync: () => getVercelOidcTokenSync2
     });
-    module.exports = __toCommonJS(get_vercel_oidc_token_exports);
+    module2.exports = __toCommonJS(get_vercel_oidc_token_exports);
     var import_get_context = require_get_context();
     var import_token_error = require_token_error();
     async function getVercelOidcToken3(options) {
@@ -740,7 +734,7 @@ ${error51.message}`;
 
 // node_modules/@vercel/oidc/dist/index.js
 var require_dist = __commonJS({
-  "node_modules/@vercel/oidc/dist/index.js"(exports, module) {
+  "node_modules/@vercel/oidc/dist/index.js"(exports2, module2) {
     "use strict";
     var __defProp3 = Object.defineProperty;
     var __getOwnPropDesc2 = Object.getOwnPropertyDescriptor;
@@ -768,7 +762,7 @@ var require_dist = __commonJS({
       getVercelOidcTokenSync: () => import_get_vercel_oidc_token.getVercelOidcTokenSync,
       getVercelToken: () => import_token_util.getVercelToken
     });
-    module.exports = __toCommonJS(src_exports);
+    module2.exports = __toCommonJS(src_exports);
     var import_get_vercel_oidc_token = require_get_vercel_oidc_token();
     var import_get_context = require_get_context();
     var import_auth_errors = require_auth_errors();
@@ -777,7 +771,7 @@ var require_dist = __commonJS({
 });
 
 // src/index.ts
-import { createInterface } from "node:readline";
+var import_node_readline = require("node:readline");
 
 // node_modules/@ai-sdk/provider/dist/index.mjs
 var marker = "vercel.ai.error";
@@ -31156,7 +31150,6 @@ async function runComplete(params, onDelta, signal) {
 }
 
 // src/models.ts
-var GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1/models";
 var THINKING_MARKERS2 = ["thinking", "reasoning"];
 var THINKING_DENYLIST = /* @__PURE__ */ new Set(["o3"]);
 function isThinkingModel(id, name21) {
@@ -31174,33 +31167,15 @@ function isThinkingModel(id, name21) {
   }
   return false;
 }
-function modelKind(model) {
-  return model.type ?? model.modelType ?? null;
-}
 function isCompletionModel(model) {
-  const kind = modelKind(model);
-  if (kind && kind !== "language") {
+  if (model.modelType && model.modelType !== "language") {
     return false;
   }
   return !isThinkingModel(model.id, model.name);
 }
 async function listCompletionModels() {
-  const apiKey = process.env.AI_GATEWAY_API_KEY;
-  if (!apiKey) {
-    throw new Error("AI_GATEWAY_API_KEY is not set");
-  }
-  const response = await fetch(GATEWAY_MODELS_URL, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`
-    }
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`list models failed (${response.status}): ${body}`);
-  }
-  const payload = await response.json();
-  const models = payload.data ?? [];
-  return models.filter(isCompletionModel).map((model) => model.id).sort((a, b) => a.localeCompare(b));
+  const metadata = await gateway.getAvailableModels();
+  return metadata.models.filter(isCompletionModel).map((model) => model.id).sort((a, b) => a.localeCompare(b));
 }
 
 // src/index.ts
@@ -31312,7 +31287,7 @@ async function handleMessage(message) {
 if (!process.env.AI_GATEWAY_API_KEY) {
   logDebug("warning: AI_GATEWAY_API_KEY is not set");
 }
-var rl = createInterface({ input: process.stdin });
+var rl = (0, import_node_readline.createInterface)({ input: process.stdin });
 rl.on("line", (line) => {
   const trimmed = line.trim();
   if (trimmed === "") {

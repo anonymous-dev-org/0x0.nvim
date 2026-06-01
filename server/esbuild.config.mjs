@@ -14,6 +14,9 @@ await esbuild.build({
   platform: "node",
   target: "node18",
   format: "esm",
+  banner: {
+    js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
+  },
   outfile,
   sourcemap: false,
   minify: false,

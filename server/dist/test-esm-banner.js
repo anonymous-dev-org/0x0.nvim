@@ -31156,7 +31156,6 @@ async function runComplete(params, onDelta, signal) {
 }
 
 // src/models.ts
-var GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1/models";
 var THINKING_MARKERS2 = ["thinking", "reasoning"];
 var THINKING_DENYLIST = /* @__PURE__ */ new Set(["o3"]);
 function isThinkingModel(id, name21) {
@@ -31174,33 +31173,15 @@ function isThinkingModel(id, name21) {
   }
   return false;
 }
-function modelKind(model) {
-  return model.type ?? model.modelType ?? null;
-}
 function isCompletionModel(model) {
-  const kind = modelKind(model);
-  if (kind && kind !== "language") {
+  if (model.modelType && model.modelType !== "language") {
     return false;
   }
   return !isThinkingModel(model.id, model.name);
 }
 async function listCompletionModels() {
-  const apiKey = process.env.AI_GATEWAY_API_KEY;
-  if (!apiKey) {
-    throw new Error("AI_GATEWAY_API_KEY is not set");
-  }
-  const response = await fetch(GATEWAY_MODELS_URL, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`
-    }
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`list models failed (${response.status}): ${body}`);
-  }
-  const payload = await response.json();
-  const models = payload.data ?? [];
-  return models.filter(isCompletionModel).map((model) => model.id).sort((a, b) => a.localeCompare(b));
+  const metadata = await gateway.getAvailableModels();
+  return metadata.models.filter(isCompletionModel).map((model) => model.id).sort((a, b) => a.localeCompare(b));
 }
 
 // src/index.ts
