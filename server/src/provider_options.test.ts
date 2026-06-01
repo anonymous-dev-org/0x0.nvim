@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { completionProviderOptions } from "./provider_options.ts";
+import { completionMaxOutputTokens, completionProviderOptions, completionSupportsTemperature, completionUsesReasoningOutputBudget } from "./provider_options.ts";
 
 test("disables thinking for anthropic and openai models", () => {
   assert.deepEqual(completionProviderOptions("anthropic/claude-sonnet-4.6"), {
@@ -142,4 +142,18 @@ test("configures bedrock claude models with adaptive reasoning", () => {
       reasoningConfig: { type: "adaptive", maxReasoningEffort: "low" },
     },
   });
+});
+
+test("reserves output budget for openai reasoning models", () => {
+  assert.equal(completionUsesReasoningOutputBudget("openai/gpt-5.1-codex-mini"), true);
+  assert.equal(completionUsesReasoningOutputBudget("openai/gpt-4o-mini"), false);
+  assert.equal(completionMaxOutputTokens("openai/gpt-5.1-codex-mini", 64), 256);
+  assert.equal(completionMaxOutputTokens("openai/gpt-4o-mini", 64), 64);
+});
+
+test("omits temperature only for openai reasoning models", () => {
+  assert.equal(completionSupportsTemperature("openai/gpt-5.1-codex-mini"), false);
+  assert.equal(completionSupportsTemperature("openai/gpt-4o-mini"), true);
+  assert.equal(completionSupportsTemperature("mistral/codestral"), true);
+  assert.equal(completionSupportsTemperature("anthropic/claude-sonnet-4.6"), true);
 });

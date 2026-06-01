@@ -31225,6 +31225,49 @@ function bedrockOptions(model) {
   }
   return void 0;
 }
+function completionSupportsTemperature(modelId) {
+  const provider = providerName(modelId);
+  const model = modelShortName(modelId);
+  if (provider === "openai") {
+    return !isOpenAiReasoningModel(model);
+  }
+  return true;
+}
+function completionUsesReasoningOutputBudget(modelId) {
+  const provider = providerName(modelId);
+  const model = modelShortName(modelId);
+  if (provider === "openai") {
+    return isOpenAiReasoningModel(model);
+  }
+  if (provider === "xai") {
+    return isXaiReasoningModel(model);
+  }
+  if (provider === "deepseek") {
+    return isDeepSeekReasoningModel(model);
+  }
+  if (provider === "groq") {
+    return isGroqReasoningModel(model);
+  }
+  if (provider === "google" || provider === "vertex") {
+    return isGemini3(model);
+  }
+  if (provider === "anthropic") {
+    return isAnthropicAdaptiveOnly(model);
+  }
+  if (provider === "bedrock") {
+    return bedrockOptions(model) !== void 0;
+  }
+  return false;
+}
+var REASONING_OUTPUT_TOKEN_FLOOR = 256;
+var REASONING_OUTPUT_TOKEN_HEADROOM = 192;
+function completionMaxOutputTokens(modelId, requested) {
+  const base = requested ?? 64;
+  if (!completionUsesReasoningOutputBudget(modelId)) {
+    return base;
+  }
+  return Math.max(base + REASONING_OUTPUT_TOKEN_HEADROOM, REASONING_OUTPUT_TOKEN_FLOOR);
+}
 function completionProviderOptions(modelId) {
   const provider = providerName(modelId);
   const model = modelShortName(modelId);
@@ -31284,17 +31327,30 @@ function completionProviderOptions(modelId) {
   return options;
 }
 
-// src/complete.ts
+// src/stream_options.ts
 var DEFAULT_MAX_OUTPUT_TOKENS = 64;
+function buildCompletionStreamOptions(modelId, params) {
+  const maxOutputTokens = completionMaxOutputTokens(
+    modelId,
+    params.max_tokens ?? DEFAULT_MAX_OUTPUT_TOKENS
+  );
+  const providerOptions = completionProviderOptions(modelId);
+  const options = { maxOutputTokens, providerOptions };
+  if (completionSupportsTemperature(modelId)) {
+    options.temperature = params.temperature ?? 0;
+  }
+  return options;
+}
+
+// src/complete.ts
 async function runComplete(params, onDelta, signal) {
   let streamError;
+  const streamOptions = buildCompletionStreamOptions(params.model, params);
   const result = streamText({
     model: params.model,
     system: systemPrompt(),
     prompt: buildPrompt(params),
-    maxOutputTokens: params.max_tokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
-    temperature: params.temperature ?? 0,
-    providerOptions: completionProviderOptions(params.model),
+    ...streamOptions,
     abortSignal: signal,
     onError({ error: error51 }) {
       streamError = error51 instanceof Error ? error51 : new Error(String(error51));

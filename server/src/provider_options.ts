@@ -172,6 +172,59 @@ function bedrockOptions(model: string): SharedV3ProviderOptions["bedrock"] | und
   return undefined;
 }
 
+export function completionSupportsTemperature(modelId: string): boolean {
+  const provider = providerName(modelId);
+  const model = modelShortName(modelId);
+
+  // OpenAI gpt-5, codex, and o-series reject temperature via the gateway.
+  if (provider === "openai") {
+    return !isOpenAiReasoningModel(model);
+  }
+
+  return true;
+}
+
+export function completionUsesReasoningOutputBudget(modelId: string): boolean {
+  const provider = providerName(modelId);
+  const model = modelShortName(modelId);
+
+  if (provider === "openai") {
+    return isOpenAiReasoningModel(model);
+  }
+  if (provider === "xai") {
+    return isXaiReasoningModel(model);
+  }
+  if (provider === "deepseek") {
+    return isDeepSeekReasoningModel(model);
+  }
+  if (provider === "groq") {
+    return isGroqReasoningModel(model);
+  }
+  if (provider === "google" || provider === "vertex") {
+    // Gemini 2.5 disables thinking; Gemini 3 still allocates a thinking budget.
+    return isGemini3(model);
+  }
+  if (provider === "anthropic") {
+    return isAnthropicAdaptiveOnly(model);
+  }
+  if (provider === "bedrock") {
+    return bedrockOptions(model) !== undefined;
+  }
+  return false;
+}
+
+const REASONING_OUTPUT_TOKEN_FLOOR = 256;
+const REASONING_OUTPUT_TOKEN_HEADROOM = 192;
+
+export function completionMaxOutputTokens(modelId: string, requested?: number): number {
+  const base = requested ?? 64;
+  if (!completionUsesReasoningOutputBudget(modelId)) {
+    return base;
+  }
+  // Reasoning models share maxOutputTokens between internal reasoning and visible text.
+  return Math.max(base + REASONING_OUTPUT_TOKEN_HEADROOM, REASONING_OUTPUT_TOKEN_FLOOR);
+}
+
 export function completionProviderOptions(modelId: string): SharedV3ProviderOptions {
   const provider = providerName(modelId);
   const model = modelShortName(modelId);
