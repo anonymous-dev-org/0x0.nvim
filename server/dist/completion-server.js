@@ -31105,28 +31105,177 @@ var THINKING_MARKERS = ["thinking", "reasoning"];
 function providerName(modelId) {
   return modelId.split("/")[0]?.toLowerCase() ?? "";
 }
-function completionProviderOptions(modelId) {
-  const provider = providerName(modelId);
-  const options = {};
-  if (provider === "anthropic") {
-    options.anthropic = {
-      thinking: { type: "disabled" },
-      effort: "low"
-    };
-    return options;
+function modelShortName(modelId) {
+  const slash = modelId.indexOf("/");
+  return (slash >= 0 ? modelId.slice(slash + 1) : modelId).toLowerCase();
+}
+function openaiReasoningEffort(model) {
+  if (model.includes("codex") || /^o\d/.test(model)) {
+    return "low";
   }
-  if (provider === "openai") {
-    options.openai = {
-      reasoningEffort: "none"
-    };
-    return options;
+  if (/^gpt-5\.1(?:-|$)/.test(model) && !model.includes("codex")) {
+    return "none";
   }
-  if (provider === "google") {
-    options.google = {
+  if (model.startsWith("gpt-5")) {
+    return "minimal";
+  }
+  return "low";
+}
+function isOpenAiReasoningModel(model) {
+  return model.includes("codex") || /^o\d/.test(model) || model.startsWith("gpt-5");
+}
+function openaiOptions(model) {
+  if (!isOpenAiReasoningModel(model)) {
+    return void 0;
+  }
+  return { reasoningEffort: openaiReasoningEffort(model) };
+}
+function isAnthropicAdaptiveOnly(model) {
+  return model.includes("mythos");
+}
+function supportsAnthropicEffort(model) {
+  if (model.includes("sonnet-4-6") || model.includes("sonnet-4.6")) {
+    return true;
+  }
+  if (model.includes("opus-4-6") || model.includes("opus-4.6") || model.includes("opus-4-7") || model.includes("opus-4.7") || model.includes("opus-4-8") || model.includes("opus-4.8")) {
+    return true;
+  }
+  return /opus-4-([5-9]|[1-9]\d)/.test(model) || model.includes("opus-4.5");
+}
+function supportsAnthropicThinking(model) {
+  return model.includes("opus-4") || model.includes("sonnet-4") || model.includes("3-7") || model.includes("3.7");
+}
+function anthropicOptions(model) {
+  if (isAnthropicAdaptiveOnly(model)) {
+    return { thinking: { type: "adaptive" }, effort: "low" };
+  }
+  if (supportsAnthropicEffort(model)) {
+    return { thinking: { type: "disabled" }, effort: "low" };
+  }
+  if (supportsAnthropicThinking(model)) {
+    return { thinking: { type: "disabled" } };
+  }
+  return void 0;
+}
+function isGemini3(model) {
+  return /gemini-3(?:\.|-|$)/.test(model);
+}
+function isGemini25(model) {
+  return /gemini-2\.5/.test(model);
+}
+function gemini3ThinkingLevel(model) {
+  return model.includes("flash") ? "minimal" : "low";
+}
+function googleThinkingOptions(model) {
+  if (isGemini3(model)) {
+    return {
+      thinkingConfig: {
+        thinkingLevel: gemini3ThinkingLevel(model)
+      }
+    };
+  }
+  if (isGemini25(model)) {
+    return {
       thinkingConfig: {
         thinkingBudget: 0
       }
     };
+  }
+  return void 0;
+}
+function isXaiReasoningModel(model) {
+  if (model.includes("non-reasoning")) {
+    return false;
+  }
+  return model.includes("reasoning") || model.includes("grok-3-mini") || model.includes("grok-code") || /^grok-[34]/.test(model);
+}
+function xaiOptions(model) {
+  if (!isXaiReasoningModel(model)) {
+    return void 0;
+  }
+  return { reasoningEffort: "low" };
+}
+function isDeepSeekReasoningModel(model) {
+  return model.includes("reasoner") || model.includes("r1") || model.includes("-v4");
+}
+function deepseekOptions(model) {
+  if (!isDeepSeekReasoningModel(model)) {
+    return void 0;
+  }
+  return { thinking: { type: "disabled" }, reasoningEffort: "low" };
+}
+function isGroqReasoningModel(model) {
+  return model.includes("qwq") || model.includes("qwen3") || model.includes("deepseek-r1") || model.includes("gpt-oss");
+}
+function groqOptions(model) {
+  if (!isGroqReasoningModel(model)) {
+    return void 0;
+  }
+  if (model.includes("qwen")) {
+    return { reasoningEffort: "none", reasoningFormat: "hidden" };
+  }
+  return { reasoningEffort: "low", reasoningFormat: "hidden" };
+}
+function bedrockOptions(model) {
+  if (!model.includes("claude")) {
+    return void 0;
+  }
+  if (isAnthropicAdaptiveOnly(model) || supportsAnthropicEffort(model)) {
+    return { reasoningConfig: { type: "adaptive", maxReasoningEffort: "low" } };
+  }
+  return void 0;
+}
+function completionProviderOptions(modelId) {
+  const provider = providerName(modelId);
+  const model = modelShortName(modelId);
+  const options = {};
+  if (provider === "anthropic") {
+    const anthropic = anthropicOptions(model);
+    if (anthropic) {
+      options.anthropic = anthropic;
+    }
+    return options;
+  }
+  if (provider === "openai") {
+    const openai = openaiOptions(model);
+    if (openai) {
+      options.openai = openai;
+    }
+    return options;
+  }
+  if (provider === "google" || provider === "vertex") {
+    const google = googleThinkingOptions(model);
+    if (google) {
+      options[provider] = google;
+    }
+    return options;
+  }
+  if (provider === "xai") {
+    const xai = xaiOptions(model);
+    if (xai) {
+      options.xai = xai;
+    }
+    return options;
+  }
+  if (provider === "deepseek") {
+    const deepseek = deepseekOptions(model);
+    if (deepseek) {
+      options.deepseek = deepseek;
+    }
+    return options;
+  }
+  if (provider === "groq") {
+    const groq = groqOptions(model);
+    if (groq) {
+      options.groq = groq;
+    }
+    return options;
+  }
+  if (provider === "bedrock") {
+    const bedrock = bedrockOptions(model);
+    if (bedrock) {
+      options.bedrock = bedrock;
+    }
     return options;
   }
   if (THINKING_MARKERS.some((marker21) => modelId.toLowerCase().includes(marker21))) {
@@ -31138,6 +31287,7 @@ function completionProviderOptions(modelId) {
 // src/complete.ts
 var DEFAULT_MAX_OUTPUT_TOKENS = 64;
 async function runComplete(params, onDelta, signal) {
+  let streamError;
   const result = streamText({
     model: params.model,
     system: systemPrompt(),
@@ -31146,13 +31296,23 @@ async function runComplete(params, onDelta, signal) {
     temperature: params.temperature ?? 0,
     providerOptions: completionProviderOptions(params.model),
     abortSignal: signal,
+    onError({ error: error51 }) {
+      streamError = error51 instanceof Error ? error51 : new Error(String(error51));
+    },
     onChunk({ chunk }) {
       if (chunk.type === "text-delta") {
         onDelta(chunk.text);
       }
     }
   });
-  await result.text;
+  try {
+    await result.text;
+  } catch (error51) {
+    if (streamError) {
+      throw streamError;
+    }
+    throw error51;
+  }
 }
 
 // src/models.ts

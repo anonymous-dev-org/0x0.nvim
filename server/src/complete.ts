@@ -9,6 +9,8 @@ export async function runComplete(
   onDelta: (text: string) => void,
   signal: AbortSignal,
 ): Promise<void> {
+  let streamError: Error | undefined;
+
   const result = streamText({
     model: params.model,
     system: systemPrompt(),
@@ -17,6 +19,9 @@ export async function runComplete(
     temperature: params.temperature ?? 0,
     providerOptions: completionProviderOptions(params.model),
     abortSignal: signal,
+    onError({ error }) {
+      streamError = error instanceof Error ? error : new Error(String(error));
+    },
     onChunk({ chunk }) {
       if (chunk.type === "text-delta") {
         onDelta(chunk.text);
@@ -24,5 +29,12 @@ export async function runComplete(
     },
   });
 
-  await result.text;
+  try {
+    await result.text;
+  } catch (error) {
+    if (streamError) {
+      throw streamError;
+    }
+    throw error;
+  }
 }
