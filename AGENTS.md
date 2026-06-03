@@ -40,8 +40,10 @@ inline completion only.
 - **Auth via `AI_GATEWAY_API_KEY`** (or `complete.gateway.api_key`). Lua injects
   the key into the subprocess environment at spawn. If no key is configured, 0x0
   prompts once per session (`vim.ui.input` with `secret = true`) and persists
-  it to `stdpath('state')/0x0/gateway.json`. **Why:** inline completion should
-  work out of the box without requiring shell env setup first.
+  it to `stdpath('state')/0x0/gateway.json`. Saved keys hydrate
+  `config.current.complete.gateway.api_key` and `vim.env.AI_GATEWAY_API_KEY` on
+  later reads. **Why:** inline completion should work out of the box without
+  requiring shell env setup first or repeated prompts.
 - **Abort** sends a `cancel` NDJSON message; the server aborts the in-flight
   `streamText` call.
 - **Transport death** purges the singleton so the next request respawns cleanly.

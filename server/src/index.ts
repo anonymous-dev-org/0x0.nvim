@@ -57,6 +57,16 @@ function asCompleteParams(params: Record<string, unknown> | undefined): Complete
             suffix: typeof entry.suffix === "string" ? entry.suffix : undefined,
             completion:
               typeof entry.completion === "string" ? entry.completion : undefined,
+            kind: typeof entry.kind === "string" ? entry.kind : undefined,
+            accepted_count:
+              typeof entry.accepted_count === "number"
+                ? entry.accepted_count
+                : undefined,
+            last_accepted_at:
+              typeof entry.last_accepted_at === "number"
+                ? entry.last_accepted_at
+                : undefined,
+            score: typeof entry.score === "number" ? entry.score : undefined,
           }))
       : undefined,
     scope:
@@ -93,6 +103,24 @@ function asRagLookupParams(params: Record<string, unknown> | undefined): RagLook
     example_threshold:
       typeof params?.example_threshold === "number" ? params.example_threshold : undefined,
     max_examples: typeof params?.max_examples === "number" ? params.max_examples : undefined,
+    recent_examples:
+      typeof params?.recent_examples === "number" ? params.recent_examples : undefined,
+    reward_half_life_ms:
+      typeof params?.reward_half_life_ms === "number"
+        ? params.reward_half_life_ms
+        : undefined,
+    reward_count_weight:
+      typeof params?.reward_count_weight === "number"
+        ? params.reward_count_weight
+        : undefined,
+    reward_recency_weight:
+      typeof params?.reward_recency_weight === "number"
+        ? params.reward_recency_weight
+        : undefined,
+    reward_same_file_weight:
+      typeof params?.reward_same_file_weight === "number"
+        ? params.reward_same_file_weight
+        : undefined,
     scope:
       scope && typeof scope === "object"
         ? {

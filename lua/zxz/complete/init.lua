@@ -262,6 +262,34 @@ local function completion_request(ctx, cwd, model, cfg, rag_examples)
 	}
 end
 
+local function example_key(example)
+	return table.concat({
+		tostring(example.prefix or ""),
+		tostring(example.suffix or ""),
+		tostring(example.completion or ""),
+	}, "\0")
+end
+
+local function merge_examples(...)
+	local merged = {}
+	local seen = {}
+	for i = 1, select("#", ...) do
+		local examples = select(i, ...)
+		if type(examples) == "table" then
+			for _, example in ipairs(examples) do
+				if type(example) == "table" and type(example.completion) == "string" and example.completion ~= "" then
+					local key = example_key(example)
+					if not seen[key] then
+						seen[key] = true
+						merged[#merged + 1] = example
+					end
+				end
+			end
+		end
+	end
+	return merged
+end
+
 local function inflight_matches(bufnr, before)
 	if not _abort_fn or not _inflight then
 		return false
@@ -534,6 +562,7 @@ function M._request_completion()
 	end
 
 	remember_suggestion(ctx)
+	local session_examples = rag.recent_examples(ctx)
 
 	_request_id = _request_id + 1
 	local request_id = _request_id
@@ -557,6 +586,7 @@ function M._request_completion()
 			return
 		end
 		debug_log("request gateway model=" .. tostring(model))
+		local prompt_examples = merge_examples(session_examples, rag_examples)
 
 		_streaming_text = ""
 		_visible_text = ""
@@ -570,7 +600,7 @@ function M._request_completion()
 
 		_abort_fn = client.stream_completion(
 			nil,
-			completion_request(ctx, cwd, model, cfg, rag_examples),
+			completion_request(ctx, cwd, model, cfg, prompt_examples),
 			function(chunk)
 				if request_id ~= _request_id then
 					return

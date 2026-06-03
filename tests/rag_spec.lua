@@ -5,6 +5,7 @@ describe("completion rag", function()
 		package.loaded["zxz.complete.rag"] = nil
 		rag = require("zxz.complete.rag")
 		rag.clear()
+		require("zxz.core.completion_client").rag_record = function() end
 	end)
 
 	it("stores recent accepted completions in the session hot ring", function()
@@ -51,5 +52,36 @@ describe("completion rag", function()
 		assert.is_nil(rag.lookup_session({ prefix = "a", suffix = "", language = "lua" }))
 		assert.are.equal("3", rag.lookup_session({ prefix = "c", suffix = "", language = "lua" }))
 		assert.is_not_nil(hash)
+	end)
+
+	it("returns recent accepted completions for prompt history", function()
+		local config = require("zxz.core.config")
+		config.setup({
+			complete = {
+				rag = {
+					enabled = true,
+					session_entries = 5,
+					recent_examples = 2,
+				},
+			},
+		})
+		package.loaded["zxz.complete.rag"] = nil
+		rag = require("zxz.complete.rag")
+		require("zxz.core.completion_client").rag_record = function() end
+
+		rag.record("local a = ", "", "lua", "1")
+		rag.record("local b = ", "", "lua", "2")
+		rag.record("const c = ", "", "javascript", "3")
+
+		local examples = rag.recent_examples({
+			prefix = "local z = ",
+			suffix = "",
+			language = "lua",
+		})
+
+		assert.are.equal(2, #examples)
+		assert.are.equal("2", examples[1].completion)
+		assert.are.equal("1", examples[2].completion)
+		assert.are.equal("recent", examples[1].kind)
 	end)
 end)

@@ -307,6 +307,52 @@ describe("inline completion", function()
 		assert.are.equal("1", captured.request.examples[1].completion)
 	end)
 
+	it("forwards recent accepted completions with rag examples", function()
+		local rag = require("zxz.complete.rag")
+		rag.clear()
+		rag.record("local previous = ", "", "lua", "7")
+
+		local completion_client = require("zxz.core.completion_client")
+		local original_stream = completion_client.stream_completion
+		local original_rag = completion_client.rag_lookup
+		local captured
+		completion_client.rag_lookup = function(_request, on_result)
+			on_result({
+				examples = {
+					{ prefix = "local similar = ", suffix = "", completion = "8", kind = "relevant" },
+				},
+			}, nil)
+		end
+		completion_client.stream_completion = function(_provider, request, on_chunk, on_done)
+			captured = { request = request }
+			on_chunk("99")
+			on_done()
+			return function() end
+		end
+
+		local complete = require("zxz.complete")
+		local bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_set_current_buf(bufnr)
+		vim.bo[bufnr].filetype = "lua"
+		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-rag-history.lua")
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
+		vim.wo.virtualedit = "onemore"
+		vim.api.nvim_win_set_cursor(0, { 1, #"local value = " })
+		complete._mode = function()
+			return "i"
+		end
+
+		complete._request_completion()
+
+		completion_client.stream_completion = original_stream
+		completion_client.rag_lookup = original_rag
+
+		assert.is_truthy(captured)
+		assert.are.equal(2, #captured.request.examples)
+		assert.are.equal("7", captured.request.examples[1].completion)
+		assert.are.equal("8", captured.request.examples[2].completion)
+	end)
+
 	it("routes the selected gateway model", function()
 		config.setup({
 			complete = {

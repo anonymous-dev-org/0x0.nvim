@@ -10,9 +10,34 @@ local function key_path()
 	return paths.gateway_key_path()
 end
 
-local function env_key()
+local function gateway_settings()
+	config.current.complete = config.current.complete or {}
+	config.current.complete.gateway = config.current.complete.gateway or {}
+	return config.current.complete.gateway
+end
+
+local function api_key_env_name()
 	local gateway = config.current.complete and config.current.complete.gateway or {}
-	local env_name = gateway.api_key_env or "AI_GATEWAY_API_KEY"
+	local env_name = gateway.api_key_env
+	if type(env_name) ~= "string" or env_name == "" then
+		env_name = "AI_GATEWAY_API_KEY"
+	end
+	return env_name
+end
+
+local function publish_global(api_key)
+	if type(api_key) ~= "string" or api_key == "" then
+		return
+	end
+	local gateway = gateway_settings()
+	gateway.api_key = api_key
+	local env_name = api_key_env_name()
+	vim.env[env_name] = api_key
+	vim.env.AI_GATEWAY_API_KEY = api_key
+end
+
+local function env_key()
+	local env_name = api_key_env_name()
 	local from_env = vim.fn.getenv(env_name)
 	if type(from_env) == "string" and from_env ~= "" then
 		return from_env
@@ -44,13 +69,19 @@ end
 function M.get_api_key()
 	local gateway = config.current.complete and config.current.complete.gateway or {}
 	if type(gateway.api_key) == "string" and gateway.api_key ~= "" then
+		publish_global(gateway.api_key)
 		return gateway.api_key
 	end
 	local from_env = env_key()
 	if from_env then
+		publish_global(from_env)
 		return from_env
 	end
-	return M.load_persisted_key()
+	local persisted = M.load_persisted_key()
+	if persisted then
+		publish_global(persisted)
+	end
+	return persisted
 end
 
 ---@return boolean
@@ -64,8 +95,7 @@ function M.set_api_key(api_key)
 	if api_key == "" then
 		return false
 	end
-	config.current.complete.gateway = config.current.complete.gateway or {}
-	config.current.complete.gateway.api_key = api_key
+	publish_global(api_key)
 	vim.fn.mkdir(paths.state_dir(), "p")
 	vim.fn.writefile({ vim.json.encode({ api_key = api_key }) }, key_path())
 	pcall(function()

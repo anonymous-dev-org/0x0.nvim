@@ -23,6 +23,8 @@ test("buildPrompt matches inline completion shape", () => {
         prefix: "local y = ",
         suffix: "",
         completion: "1",
+        kind: "recent",
+        accepted_count: 2,
       },
     ],
   });
@@ -37,7 +39,8 @@ test("buildPrompt matches inline completion shape", () => {
   assert.match(prompt, /local M = require\("mod"\)/);
   assert.match(prompt, /Enclosing scope \(function, lines 1-3\):/);
   assert.match(prompt, /function foo\(\)\nend/);
-  assert.match(prompt, /Recent accepted completions in this language:/);
+  assert.match(prompt, /Accepted completion memories/);
+  assert.match(prompt, /Memory 1 \(recent, accepted 2x\):/);
   assert.match(prompt, /Before cursor: local y = /);
   assert.match(prompt, /Inserted: 1/);
   assert.match(prompt, /local x = <\|cursor\|>/);

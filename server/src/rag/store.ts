@@ -5,6 +5,11 @@ import { persist, restore } from "@orama/plugin-data-persistence";
 import { loadManifest, saveManifest, type ManifestEntry } from "./manifest.ts";
 import type { RagConfig, RagDocument } from "./types.ts";
 
+export type RagReward = {
+  acceptedCount: number;
+  lastAcceptedAt: number;
+};
+
 const SCHEMA = {
   id: "string",
   language: "string",
@@ -20,7 +25,8 @@ const SCHEMA = {
 
 export type RagStore = {
   db: AnyOrama;
-  exactIndex: Map<string, { completion: string; suffix: string }>;
+  exactIndex: Map<string, { completion: string; suffix: string; acceptedAt: number }>;
+  rewardIndex: Map<string, RagReward>;
   manifest: ManifestEntry[];
   schedulePersist(): void;
   flushPersist(): Promise<void>;
@@ -34,16 +40,39 @@ function exactKey(contextHash: string, language: string): string {
   return `${language}\0${contextHash}`;
 }
 
+function rewardKey(language: string, contextHash: string, completion: string): string {
+  return `${language}\0${contextHash}\0${completion}`;
+}
+
 function applyManifest(
   manifest: ManifestEntry[],
-  exactIndex: Map<string, { completion: string; suffix: string }>,
+  exactIndex: Map<string, { completion: string; suffix: string; acceptedAt: number }>,
+  rewardIndex: Map<string, RagReward>,
 ): void {
   exactIndex.clear();
+  rewardIndex.clear();
   for (const entry of manifest) {
-    exactIndex.set(exactKey(entry.context_hash, entry.language), {
-      completion: entry.completion,
-      suffix: entry.suffix,
-    });
+    const acceptedAt =
+      typeof entry.accepted_at === "number" && Number.isFinite(entry.accepted_at)
+        ? entry.accepted_at
+        : 0;
+    const existingExact = exactIndex.get(exactKey(entry.context_hash, entry.language));
+    if (!existingExact || acceptedAt >= existingExact.acceptedAt) {
+      exactIndex.set(exactKey(entry.context_hash, entry.language), {
+        completion: entry.completion,
+        suffix: entry.suffix,
+        acceptedAt,
+      });
+    }
+    const reward = rewardIndex.get(
+      rewardKey(entry.language, entry.context_hash, entry.completion),
+    ) ?? { acceptedCount: 0, lastAcceptedAt: 0 };
+    reward.acceptedCount += 1;
+    reward.lastAcceptedAt = Math.max(reward.lastAcceptedAt, acceptedAt);
+    rewardIndex.set(
+      rewardKey(entry.language, entry.context_hash, entry.completion),
+      reward,
+    );
     const numeric = Number.parseInt(entry.id, 10);
     if (!Number.isNaN(numeric) && numeric >= nextId) {
       nextId = numeric + 1;
@@ -58,7 +87,8 @@ export async function openStore(config: RagConfig): Promise<RagStore> {
   }
 
   let db: AnyOrama;
-  const exactIndex = new Map<string, { completion: string; suffix: string }>();
+  const exactIndex = new Map<string, { completion: string; suffix: string; acceptedAt: number }>();
+  const rewardIndex = new Map<string, RagReward>();
   let manifest = loadManifest(config.indexPath);
 
   if (existsSync(config.indexPath)) {
@@ -77,11 +107,12 @@ export async function openStore(config: RagConfig): Promise<RagStore> {
     manifest = [];
   }
 
-  applyManifest(manifest, exactIndex);
+  applyManifest(manifest, exactIndex, rewardIndex);
 
   const store: RagStore = {
     db,
     exactIndex,
+    rewardIndex,
     manifest,
     schedulePersist() {
       if (persistTimer) {
@@ -123,11 +154,19 @@ export async function insertDocument(
   store.exactIndex.set(exactKey(doc.context_hash, doc.language), {
     completion: doc.completion,
     suffix: doc.suffix,
+    acceptedAt: doc.accepted_at,
   });
+  const key = rewardKey(doc.language, doc.context_hash, doc.completion);
+  const reward = store.rewardIndex.get(key) ?? { acceptedCount: 0, lastAcceptedAt: 0 };
+  reward.acceptedCount += 1;
+  reward.lastAcceptedAt = Math.max(reward.lastAcceptedAt, doc.accepted_at);
+  store.rewardIndex.set(key, reward);
   store.manifest.push({
     id: doc.id,
     context_hash: doc.context_hash,
     language: doc.language,
+    filepath: doc.filepath,
+    prefix: doc.prefix,
     suffix: doc.suffix,
     completion: doc.completion,
     accepted_at: doc.accepted_at,
@@ -141,6 +180,63 @@ export function lookupExact(
   language: string,
 ): { completion: string; suffix: string } | null {
   return store.exactIndex.get(exactKey(contextHash, language)) ?? null;
+}
+
+export function rewardForDocument(store: RagStore, doc: RagDocument): RagReward {
+  return (
+    store.rewardIndex.get(rewardKey(doc.language, doc.context_hash, doc.completion)) ?? {
+      acceptedCount: 1,
+      lastAcceptedAt: doc.accepted_at,
+    }
+  );
+}
+
+export function recentAcceptedExamples(
+  store: RagStore,
+  language: string,
+  maxExamples: number,
+): Array<{
+  prefix: string;
+  suffix: string;
+  completion: string;
+  kind: "recent";
+  accepted_count: number;
+  last_accepted_at: number;
+}> {
+  if (maxExamples <= 0) {
+    return [];
+  }
+
+  const examples = [];
+  const seen = new Set<string>();
+  const sorted = [...store.manifest]
+    .filter((entry) => entry.language === language && entry.completion !== "" && entry.prefix)
+    .sort((a, b) => b.accepted_at - a.accepted_at);
+
+  for (const entry of sorted) {
+    const key = rewardKey(entry.language, entry.context_hash, entry.completion);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    const reward = store.rewardIndex.get(key) ?? {
+      acceptedCount: 1,
+      lastAcceptedAt: entry.accepted_at,
+    };
+    examples.push({
+      prefix: entry.prefix ?? "",
+      suffix: entry.suffix,
+      completion: entry.completion,
+      kind: "recent" as const,
+      accepted_count: reward.acceptedCount,
+      last_accepted_at: reward.lastAcceptedAt,
+    });
+    if (examples.length >= maxExamples) {
+      break;
+    }
+  }
+
+  return examples;
 }
 
 export async function pruneOldest(store: RagStore, maxEntries: number): Promise<void> {
@@ -158,6 +254,7 @@ export async function pruneOldest(store: RagStore, maxEntries: number): Promise<
 
   const removeIds = new Set(toRemove.map((entry) => entry.id));
   store.manifest = store.manifest.filter((entry) => !removeIds.has(entry.id));
+  applyManifest(store.manifest, store.exactIndex, store.rewardIndex);
   store.schedulePersist();
 }
 

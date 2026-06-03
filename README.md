@@ -10,8 +10,9 @@ server that calls Vercel AI SDK `streamText` through AI Gateway.
 - An AI Gateway API key (prompted on first use, or set in advance)
 
 On first completion attempt without a key, 0x0 opens a secret prompt. The key is
-saved under `stdpath('state')/0x0/gateway.json`. You can also set it ahead of
-time:
+saved under `stdpath('state')/0x0/gateway.json` and promoted to
+`vim.env.AI_GATEWAY_API_KEY` for future plugin/server use. You can also set it
+ahead of time:
 
 ```bash
 export AI_GATEWAY_API_KEY="vck_..."
@@ -55,6 +56,11 @@ model. `:ZxzLog` opens the debug log.
 
 The bundled server inlines buffer context in the prompt and performs plain text
 completion only — no agent tools, no provider subprocesses.
+
+Accepted completions are also kept as local RAG memory. Exact context matches
+can bypass the gateway, while recent and repeatedly accepted completions are
+fed back as short prompt memories to bias the model toward patterns the user
+has already accepted.
 
 ### nvim-cmp coexistence
 

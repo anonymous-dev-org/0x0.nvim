@@ -31077,7 +31077,9 @@ function examplesBlock(examples) {
   if (!Array.isArray(examples) || examples.length === 0) {
     return null;
   }
-  const lines = ["Recent accepted completions in this language:"];
+  const lines = [
+    "Accepted completion memories (copy the style only when it fits the cursor context):"
+  ];
   for (let i = 0; i < examples.length; i += 1) {
     const example = examples[i];
     if (!example || typeof example !== "object") {
@@ -31089,13 +31091,16 @@ function examplesBlock(examples) {
     if (prefix === "" && suffix === "" && completion === "") {
       continue;
     }
-    lines.push(
-      "",
-      `Example ${i + 1}:`,
-      `Before cursor: ${prefix}`,
-      `Inserted: ${completion}`,
-      `After cursor: ${suffix}`
-    );
+    const kind = typeof example.kind === "string" ? example.kind : "accepted";
+    const acceptedCount = typeof example.accepted_count === "number" && example.accepted_count > 1 ? `, accepted ${example.accepted_count}x` : "";
+    lines.push("", `Memory ${i + 1} (${kind}${acceptedCount}):`);
+    if (prefix !== "") {
+      lines.push(`Before cursor: ${prefix}`);
+    }
+    lines.push(`Inserted: ${completion}`);
+    if (suffix !== "") {
+      lines.push(`After cursor: ${suffix}`);
+    }
   }
   return lines.length > 1 ? lines.join("\n") : null;
 }
@@ -31573,13 +31578,31 @@ var persistTimer = null;
 function exactKey(contextHash2, language) {
   return `${language}\0${contextHash2}`;
 }
-function applyManifest(manifest, exactIndex) {
+function rewardKey(language, contextHash2, completion) {
+  return `${language}\0${contextHash2}\0${completion}`;
+}
+function applyManifest(manifest, exactIndex, rewardIndex) {
   exactIndex.clear();
+  rewardIndex.clear();
   for (const entry of manifest) {
-    exactIndex.set(exactKey(entry.context_hash, entry.language), {
-      completion: entry.completion,
-      suffix: entry.suffix
-    });
+    const acceptedAt = typeof entry.accepted_at === "number" && Number.isFinite(entry.accepted_at) ? entry.accepted_at : 0;
+    const existingExact = exactIndex.get(exactKey(entry.context_hash, entry.language));
+    if (!existingExact || acceptedAt >= existingExact.acceptedAt) {
+      exactIndex.set(exactKey(entry.context_hash, entry.language), {
+        completion: entry.completion,
+        suffix: entry.suffix,
+        acceptedAt
+      });
+    }
+    const reward = rewardIndex.get(
+      rewardKey(entry.language, entry.context_hash, entry.completion)
+    ) ?? { acceptedCount: 0, lastAcceptedAt: 0 };
+    reward.acceptedCount += 1;
+    reward.lastAcceptedAt = Math.max(reward.lastAcceptedAt, acceptedAt);
+    rewardIndex.set(
+      rewardKey(entry.language, entry.context_hash, entry.completion),
+      reward
+    );
     const numeric = Number.parseInt(entry.id, 10);
     if (!Number.isNaN(numeric) && numeric >= nextId) {
       nextId = numeric + 1;
@@ -31593,6 +31616,7 @@ async function openStore(config2) {
   }
   let db;
   const exactIndex = /* @__PURE__ */ new Map();
+  const rewardIndex = /* @__PURE__ */ new Map();
   let manifest = loadManifest(config2.indexPath);
   if (existsSync2(config2.indexPath)) {
     try {
@@ -31610,10 +31634,11 @@ async function openStore(config2) {
     db = await create({ schema: SCHEMA });
     manifest = [];
   }
-  applyManifest(manifest, exactIndex);
+  applyManifest(manifest, exactIndex, rewardIndex);
   const store = {
     db,
     exactIndex,
+    rewardIndex,
     manifest,
     schedulePersist() {
       if (persistTimer) {
@@ -31650,12 +31675,20 @@ async function insertDocument(store, doc) {
   await insert(store.db, doc);
   store.exactIndex.set(exactKey(doc.context_hash, doc.language), {
     completion: doc.completion,
-    suffix: doc.suffix
+    suffix: doc.suffix,
+    acceptedAt: doc.accepted_at
   });
+  const key = rewardKey(doc.language, doc.context_hash, doc.completion);
+  const reward = store.rewardIndex.get(key) ?? { acceptedCount: 0, lastAcceptedAt: 0 };
+  reward.acceptedCount += 1;
+  reward.lastAcceptedAt = Math.max(reward.lastAcceptedAt, doc.accepted_at);
+  store.rewardIndex.set(key, reward);
   store.manifest.push({
     id: doc.id,
     context_hash: doc.context_hash,
     language: doc.language,
+    filepath: doc.filepath,
+    prefix: doc.prefix,
     suffix: doc.suffix,
     completion: doc.completion,
     accepted_at: doc.accepted_at
@@ -31664,6 +31697,43 @@ async function insertDocument(store, doc) {
 }
 function lookupExact(store, contextHash2, language) {
   return store.exactIndex.get(exactKey(contextHash2, language)) ?? null;
+}
+function rewardForDocument(store, doc) {
+  return store.rewardIndex.get(rewardKey(doc.language, doc.context_hash, doc.completion)) ?? {
+    acceptedCount: 1,
+    lastAcceptedAt: doc.accepted_at
+  };
+}
+function recentAcceptedExamples(store, language, maxExamples) {
+  if (maxExamples <= 0) {
+    return [];
+  }
+  const examples = [];
+  const seen = /* @__PURE__ */ new Set();
+  const sorted = [...store.manifest].filter((entry) => entry.language === language && entry.completion !== "" && entry.prefix).sort((a, b) => b.accepted_at - a.accepted_at);
+  for (const entry of sorted) {
+    const key = rewardKey(entry.language, entry.context_hash, entry.completion);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    const reward = store.rewardIndex.get(key) ?? {
+      acceptedCount: 1,
+      lastAcceptedAt: entry.accepted_at
+    };
+    examples.push({
+      prefix: entry.prefix ?? "",
+      suffix: entry.suffix,
+      completion: entry.completion,
+      kind: "recent",
+      accepted_count: reward.acceptedCount,
+      last_accepted_at: reward.lastAcceptedAt
+    });
+    if (examples.length >= maxExamples) {
+      break;
+    }
+  }
+  return examples;
 }
 async function pruneOldest(store, maxEntries) {
   if (store.manifest.length <= maxEntries) {
@@ -31677,6 +31747,7 @@ async function pruneOldest(store, maxEntries) {
   }
   const removeIds = new Set(toRemove.map((entry) => entry.id));
   store.manifest = store.manifest.filter((entry) => !removeIds.has(entry.id));
+  applyManifest(store.manifest, store.exactIndex, store.rewardIndex);
   store.schedulePersist();
 }
 function nextDocumentId() {
@@ -31726,8 +31797,10 @@ async function ragLookup(store, embedder, params) {
   }
   const directThreshold = params.direct_hit_threshold ?? 0.92;
   const exampleThreshold = params.example_threshold ?? 0.75;
-  const maxExamples = params.max_examples ?? 3;
+  const maxExamples = Math.max(0, params.max_examples ?? 3);
+  const recentExamples = Math.max(0, params.recent_examples ?? 0);
   const context2 = buildContext(prefix, suffix, params.scope);
+  const recent = recentAcceptedExamples(store, language, recentExamples);
   let queryVector = null;
   if (embedder?.ready) {
     queryVector = await embedder.embed(context2);
@@ -31736,10 +31809,20 @@ async function ragLookup(store, embedder, params) {
     const textResults = await search(store.db, {
       term: context2.slice(-200),
       where: { language: { eq: language } },
-      limit: maxExamples
+      limit: Math.max(12, maxExamples * 6)
     });
-    const examples2 = textResults.hits.map((hit) => hit.document).filter((doc) => doc.completion).slice(0, maxExamples).map(toExample);
-    return examples2.length > 0 ? { examples: examples2 } : {};
+    const examples2 = rankedExamples(
+      store,
+      textResults.hits.map((hit) => ({
+        document: hit.document,
+        score: hit.score
+      })),
+      params,
+      maxExamples,
+      0
+    );
+    const merged2 = mergeExamples(examples2, recent);
+    return merged2.length > 0 ? { examples: merged2 } : {};
   }
   const results = await search(store.db, {
     mode: "hybrid",
@@ -31749,12 +31832,12 @@ async function ragLookup(store, embedder, params) {
       property: "embedding"
     },
     where: { language: { eq: language } },
-    limit: maxExamples + 1,
+    limit: Math.max(12, maxExamples * 6),
     similarity: exampleThreshold,
     hybridWeights: { text: 0.4, vector: 0.6 }
   });
   if (results.hits.length === 0) {
-    return {};
+    return recent.length > 0 ? { examples: recent } : {};
   }
   const top = results.hits[0];
   const topDoc = top.document;
@@ -31762,15 +31845,78 @@ async function ragLookup(store, embedder, params) {
   if (topScore >= directThreshold && topDoc.suffix === suffix && topDoc.completion) {
     return { direct: { completion: topDoc.completion } };
   }
-  const examples = results.hits.filter((hit) => (hit.score ?? 0) >= exampleThreshold).slice(0, maxExamples).map((hit) => toExample(hit.document));
-  return examples.length > 0 ? { examples } : {};
+  const examples = rankedExamples(
+    store,
+    results.hits.map((hit) => ({
+      document: hit.document,
+      score: hit.score
+    })),
+    params,
+    maxExamples,
+    exampleThreshold
+  );
+  const merged = mergeExamples(examples, recent);
+  return merged.length > 0 ? { examples: merged } : {};
 }
-function toExample(doc) {
+function rankedExamples(store, hits, params, maxExamples, exampleThreshold) {
+  const now2 = Date.now();
+  const candidates = /* @__PURE__ */ new Map();
+  for (const hit of hits) {
+    const doc = hit.document;
+    const rawScore = hit.score ?? 0;
+    if (!doc.completion || rawScore < exampleThreshold) {
+      continue;
+    }
+    const reward = rewardForDocument(store, doc);
+    const score = rewardedScore(rawScore, reward, doc, params, now2);
+    const example = toExample(doc, reward, score);
+    const key = exampleKey(example);
+    const existing = candidates.get(key);
+    if (!existing || (example.score ?? 0) > (existing.score ?? 0)) {
+      candidates.set(key, example);
+    }
+  }
+  return [...candidates.values()].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, maxExamples);
+}
+function rewardedScore(rawScore, reward, doc, params, now2) {
+  const halfLifeMs = params.reward_half_life_ms ?? 6048e5;
+  const countWeight = params.reward_count_weight ?? 0.12;
+  const recencyWeight = params.reward_recency_weight ?? 0.08;
+  const sameFileWeight = params.reward_same_file_weight ?? 0.05;
+  const countBoost = Math.min(Math.log2(Math.max(reward.acceptedCount, 1)), 4) / 4;
+  const ageMs = Math.max(0, now2 - reward.lastAcceptedAt);
+  const recencyBoost = halfLifeMs > 0 ? Math.pow(0.5, ageMs / halfLifeMs) : 0;
+  const sameFileBoost = params.filepath && doc.filepath && params.filepath === doc.filepath ? 1 : 0;
+  return rawScore + countBoost * countWeight + recencyBoost * recencyWeight + sameFileBoost * sameFileWeight;
+}
+function toExample(doc, reward, score) {
   return {
     prefix: doc.prefix,
     suffix: doc.suffix,
-    completion: doc.completion
+    completion: doc.completion,
+    kind: "relevant",
+    accepted_count: reward.acceptedCount,
+    last_accepted_at: reward.lastAcceptedAt,
+    score
   };
+}
+function mergeExamples(...groups) {
+  const merged = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const group of groups) {
+    for (const example of group) {
+      const key = exampleKey(example);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      merged.push(example);
+    }
+  }
+  return merged;
+}
+function exampleKey(example) {
+  return `${example.prefix}\0${example.suffix}\0${example.completion}`;
 }
 
 // src/rag/record.ts
@@ -31827,6 +31973,11 @@ function defaultConfig() {
     directHitThreshold: 0.92,
     exampleThreshold: 0.75,
     maxExamples: 3,
+    recentExamples: 3,
+    rewardHalfLifeMs: 6048e5,
+    rewardCountWeight: 0.12,
+    rewardRecencyWeight: 0.08,
+    rewardSameFileWeight: 0.05,
     persistDebounceMs: 500,
     warmupOnStart: process.env.ZXZ_RAG_WARMUP !== "0"
   };
@@ -31863,7 +32014,12 @@ async function lookup(params) {
     ...params,
     direct_hit_threshold: params.direct_hit_threshold ?? configRef?.directHitThreshold,
     example_threshold: params.example_threshold ?? configRef?.exampleThreshold,
-    max_examples: params.max_examples ?? configRef?.maxExamples
+    max_examples: params.max_examples ?? configRef?.maxExamples,
+    recent_examples: params.recent_examples ?? configRef?.recentExamples,
+    reward_half_life_ms: params.reward_half_life_ms ?? configRef?.rewardHalfLifeMs,
+    reward_count_weight: params.reward_count_weight ?? configRef?.rewardCountWeight,
+    reward_recency_weight: params.reward_recency_weight ?? configRef?.rewardRecencyWeight,
+    reward_same_file_weight: params.reward_same_file_weight ?? configRef?.rewardSameFileWeight
   });
 }
 async function record2(params) {
@@ -31911,7 +32067,11 @@ function asCompleteParams(params) {
     examples: Array.isArray(examples) ? examples.filter((entry) => typeof entry === "object" && entry !== null).map((entry) => ({
       prefix: typeof entry.prefix === "string" ? entry.prefix : void 0,
       suffix: typeof entry.suffix === "string" ? entry.suffix : void 0,
-      completion: typeof entry.completion === "string" ? entry.completion : void 0
+      completion: typeof entry.completion === "string" ? entry.completion : void 0,
+      kind: typeof entry.kind === "string" ? entry.kind : void 0,
+      accepted_count: typeof entry.accepted_count === "number" ? entry.accepted_count : void 0,
+      last_accepted_at: typeof entry.last_accepted_at === "number" ? entry.last_accepted_at : void 0,
+      score: typeof entry.score === "number" ? entry.score : void 0
     })) : void 0,
     scope: scope && typeof scope === "object" ? {
       type: typeof scope.type === "string" ? scope.type : void 0,
@@ -31931,6 +32091,11 @@ function asRagLookupParams(params) {
     direct_hit_threshold: typeof params?.direct_hit_threshold === "number" ? params.direct_hit_threshold : void 0,
     example_threshold: typeof params?.example_threshold === "number" ? params.example_threshold : void 0,
     max_examples: typeof params?.max_examples === "number" ? params.max_examples : void 0,
+    recent_examples: typeof params?.recent_examples === "number" ? params.recent_examples : void 0,
+    reward_half_life_ms: typeof params?.reward_half_life_ms === "number" ? params.reward_half_life_ms : void 0,
+    reward_count_weight: typeof params?.reward_count_weight === "number" ? params.reward_count_weight : void 0,
+    reward_recency_weight: typeof params?.reward_recency_weight === "number" ? params.reward_recency_weight : void 0,
+    reward_same_file_weight: typeof params?.reward_same_file_weight === "number" ? params.reward_same_file_weight : void 0,
     scope: scope && typeof scope === "object" ? {
       type: typeof scope.type === "string" ? scope.type : void 0,
       text: typeof scope.text === "string" ? scope.text : void 0

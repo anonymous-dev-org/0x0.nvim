@@ -1,8 +1,14 @@
 describe("gateway auth", function()
 	local gateway_auth
 	local paths
+	local original_gateway_env
+	local original_custom_env
 
 	before_each(function()
+		original_gateway_env = vim.env.AI_GATEWAY_API_KEY
+		original_custom_env = vim.env.ZXZ_TEST_GATEWAY_KEY
+		vim.env.AI_GATEWAY_API_KEY = nil
+		vim.env.ZXZ_TEST_GATEWAY_KEY = nil
 		paths = require("zxz.core.paths")
 		require("zxz.core.config").setup({
 			complete = {
@@ -16,6 +22,11 @@ describe("gateway auth", function()
 		if vim.fn.filereadable(key_file) == 1 then
 			vim.fn.delete(key_file)
 		end
+	end)
+
+	after_each(function()
+		vim.env.AI_GATEWAY_API_KEY = original_gateway_env
+		vim.env.ZXZ_TEST_GATEWAY_KEY = original_custom_env
 	end)
 
 	it("reads configured and persisted keys", function()
@@ -36,6 +47,35 @@ describe("gateway auth", function()
 		gateway_auth.set_api_key("stored-key")
 		assert.are.equal("stored-key", gateway_auth.get_api_key())
 		assert.is_true(vim.fn.filereadable(paths.gateway_key_path()) == 1)
+	end)
+
+	it("promotes saved keys to global environment for future use", function()
+		gateway_auth.set_api_key("stored-key")
+		assert.are.equal("stored-key", vim.env.AI_GATEWAY_API_KEY)
+
+		require("zxz.core.config").setup({
+			complete = {
+				gateway = {},
+			},
+		})
+		vim.env.AI_GATEWAY_API_KEY = nil
+
+		assert.are.equal("stored-key", gateway_auth.get_api_key())
+		assert.are.equal("stored-key", vim.env.AI_GATEWAY_API_KEY)
+		assert.are.equal("stored-key", require("zxz.core.config").current.complete.gateway.api_key)
+	end)
+
+	it("sets custom and canonical env names when saving a key", function()
+		require("zxz.core.config").setup({
+			complete = {
+				gateway = { api_key_env = "ZXZ_TEST_GATEWAY_KEY" },
+			},
+		})
+
+		gateway_auth.set_api_key("global-key")
+
+		assert.are.equal("global-key", vim.env.ZXZ_TEST_GATEWAY_KEY)
+		assert.are.equal("global-key", vim.env.AI_GATEWAY_API_KEY)
 	end)
 
 	it("prompts for an api key and saves it", function()

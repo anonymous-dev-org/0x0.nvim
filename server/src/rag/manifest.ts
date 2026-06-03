@@ -4,6 +4,8 @@ export type ManifestEntry = {
   id: string;
   context_hash: string;
   language: string;
+  filepath?: string;
+  prefix?: string;
   suffix: string;
   completion: string;
   accepted_at: number;

@@ -2,6 +2,10 @@ export type RagExample = {
   prefix: string;
   suffix: string;
   completion: string;
+  kind?: "relevant" | "recent";
+  accepted_count?: number;
+  last_accepted_at?: number;
+  score?: number;
 };
 
 export type RagLookupResult = {
@@ -23,6 +27,11 @@ export type RagLookupParams = {
   direct_hit_threshold?: number;
   example_threshold?: number;
   max_examples?: number;
+  recent_examples?: number;
+  reward_half_life_ms?: number;
+  reward_count_weight?: number;
+  reward_recency_weight?: number;
+  reward_same_file_weight?: number;
 };
 
 export type RagRecordParams = {
@@ -61,6 +70,11 @@ export type RagConfig = {
   directHitThreshold: number;
   exampleThreshold: number;
   maxExamples: number;
+  recentExamples: number;
+  rewardHalfLifeMs: number;
+  rewardCountWeight: number;
+  rewardRecencyWeight: number;
+  rewardSameFileWeight: number;
   persistDebounceMs: number;
   warmupOnStart: boolean;
 };

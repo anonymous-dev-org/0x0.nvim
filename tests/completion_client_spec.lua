@@ -123,6 +123,7 @@ describe("completion server client", function()
 
 	it("fails immediately when the gateway key is missing", function()
 		require("zxz.core.config").setup({ complete = { gateway = {} } })
+		vim.env.AI_GATEWAY_API_KEY = nil
 		local done_err = "pending"
 		completion_client.stream_completion(nil, {
 			prefix = "local x = ",

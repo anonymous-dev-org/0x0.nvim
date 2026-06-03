@@ -28,6 +28,11 @@ function defaultConfig(): RagConfig {
     directHitThreshold: 0.92,
     exampleThreshold: 0.75,
     maxExamples: 3,
+    recentExamples: 3,
+    rewardHalfLifeMs: 604800000,
+    rewardCountWeight: 0.12,
+    rewardRecencyWeight: 0.08,
+    rewardSameFileWeight: 0.05,
     persistDebounceMs: 500,
     warmupOnStart: process.env.ZXZ_RAG_WARMUP !== "0",
   };
@@ -72,6 +77,13 @@ export async function lookup(params: RagLookupParams): Promise<RagLookupResult> 
       params.direct_hit_threshold ?? configRef?.directHitThreshold,
     example_threshold: params.example_threshold ?? configRef?.exampleThreshold,
     max_examples: params.max_examples ?? configRef?.maxExamples,
+    recent_examples: params.recent_examples ?? configRef?.recentExamples,
+    reward_half_life_ms: params.reward_half_life_ms ?? configRef?.rewardHalfLifeMs,
+    reward_count_weight: params.reward_count_weight ?? configRef?.rewardCountWeight,
+    reward_recency_weight:
+      params.reward_recency_weight ?? configRef?.rewardRecencyWeight,
+    reward_same_file_weight:
+      params.reward_same_file_weight ?? configRef?.rewardSameFileWeight,
   });
 }
 

@@ -9,6 +9,10 @@ export type CompletionExample = {
   prefix?: string;
   suffix?: string;
   completion?: string;
+  kind?: "relevant" | "recent" | string;
+  accepted_count?: number;
+  last_accepted_at?: number;
+  score?: number;
 };
 
 export type CompleteParams = {
@@ -42,7 +46,9 @@ function examplesBlock(examples: CompletionExample[] | undefined): string | null
     return null;
   }
 
-  const lines = ["Recent accepted completions in this language:"];
+  const lines = [
+    "Accepted completion memories (copy the style only when it fits the cursor context):",
+  ];
   for (let i = 0; i < examples.length; i += 1) {
     const example = examples[i];
     if (!example || typeof example !== "object") {
@@ -55,13 +61,19 @@ function examplesBlock(examples: CompletionExample[] | undefined): string | null
     if (prefix === "" && suffix === "" && completion === "") {
       continue;
     }
-    lines.push(
-      "",
-      `Example ${i + 1}:`,
-      `Before cursor: ${prefix}`,
-      `Inserted: ${completion}`,
-      `After cursor: ${suffix}`,
-    );
+    const kind = typeof example.kind === "string" ? example.kind : "accepted";
+    const acceptedCount =
+      typeof example.accepted_count === "number" && example.accepted_count > 1
+        ? `, accepted ${example.accepted_count}x`
+        : "";
+    lines.push("", `Memory ${i + 1} (${kind}${acceptedCount}):`);
+    if (prefix !== "") {
+      lines.push(`Before cursor: ${prefix}`);
+    }
+    lines.push(`Inserted: ${completion}`);
+    if (suffix !== "") {
+      lines.push(`After cursor: ${suffix}`);
+    }
   }
 
   return lines.length > 1 ? lines.join("\n") : null;

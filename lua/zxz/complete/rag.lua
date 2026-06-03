@@ -9,9 +9,9 @@ local M = {}
 
 ---@class zxz.complete.RagResult
 ---@field direct? string
----@field examples? { prefix: string, suffix: string, completion: string }[]
+---@field examples? { prefix: string, suffix: string, completion: string, kind?: string, accepted_count?: integer, last_accepted_at?: integer }[]
 
----@type { hash: string, prefix: string, suffix: string, language: string, completion: string }[]
+---@type { hash: string, prefix: string, suffix: string, language: string, completion: string, accepted_at: integer }[]
 local _session = {}
 
 local function cfg()
@@ -66,11 +66,57 @@ local function remember_session(prefix, suffix, language, completion)
 		suffix = trim_field(suffix, max_field_chars),
 		language = language,
 		completion = trim_field(completion, max_field_chars),
+		accepted_at = os.time() * 1000,
 	})
 
 	while #_session > max_entries do
 		table.remove(_session)
 	end
+end
+
+--- Recent same-language accepted completions for prompt personalization.
+---@param ctx table
+---@param limit? integer
+---@return table[]
+function M.recent_examples(ctx, limit)
+	if not enabled() then
+		return {}
+	end
+	local language = ctx and ctx.language or ""
+	if type(language) ~= "string" or language == "" then
+		return {}
+	end
+	local settings = cfg()
+	local max_examples = limit or settings.recent_examples or 0
+	if max_examples <= 0 then
+		return {}
+	end
+
+	local current_hash = M.context_hash(ctx.prefix, ctx.suffix, language)
+	local examples = {}
+	local seen = {}
+
+	for _, entry in ipairs(_session) do
+		if entry.language == language and entry.hash ~= current_hash then
+			local key = table.concat({ entry.hash, entry.completion }, "\0")
+			if not seen[key] then
+				seen[key] = true
+				examples[#examples + 1] = {
+					prefix = entry.prefix,
+					suffix = entry.suffix,
+					completion = entry.completion,
+					kind = "recent",
+					accepted_count = 1,
+					last_accepted_at = entry.accepted_at,
+				}
+				if #examples >= max_examples then
+					break
+				end
+			end
+		end
+	end
+
+	return examples
 end
 
 --- Async lookup via the Node RAG index.
@@ -94,6 +140,11 @@ function M.lookup(ctx, on_result)
 		direct_hit_threshold = settings.direct_hit_threshold,
 		example_threshold = settings.example_threshold,
 		max_examples = settings.max_examples,
+		recent_examples = settings.recent_examples,
+		reward_half_life_ms = settings.reward_half_life_ms,
+		reward_count_weight = settings.reward_count_weight,
+		reward_recency_weight = settings.reward_recency_weight,
+		reward_same_file_weight = settings.reward_same_file_weight,
 	}, function(result, err)
 		if on_result then
 			on_result(result, err)
