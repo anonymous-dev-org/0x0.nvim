@@ -22,6 +22,11 @@ test("uses minimum reasoning effort for openai codex models", () => {
       reasoningEffort: "low",
     },
   });
+  assert.deepEqual(completionProviderOptions("openai/codex-5.3"), {
+    openai: {
+      reasoningEffort: "low",
+    },
+  });
 });
 
 test("uses none only for gpt-5.1 non-codex models", () => {

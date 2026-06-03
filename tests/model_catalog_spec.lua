@@ -20,17 +20,19 @@ describe("model catalog", function()
 		local original = completion_client.list_models
 		completion_client.list_models = function(on_done)
 			on_done({
-				"mistral/codestral",
 				"anthropic/claude-sonnet-4.6",
 				"anthropic/claude-sonnet-4.6-thinking",
+				"alibaba/qwen3-coder",
+				"mistral/codestral",
 			})
 		end
 
 		local done = false
 		model_catalog.refresh(function(models)
 			assert.are.same({
-				"anthropic/claude-sonnet-4.6",
 				"mistral/codestral",
+				"alibaba/qwen3-coder",
+				"anthropic/claude-sonnet-4.6",
 			}, models)
 			done = true
 		end)
@@ -39,8 +41,9 @@ describe("model catalog", function()
 			return done
 		end))
 		assert.are.same({
-			"anthropic/claude-sonnet-4.6",
 			"mistral/codestral",
+			"alibaba/qwen3-coder",
+			"anthropic/claude-sonnet-4.6",
 		}, model_catalog.get_models())
 
 		completion_client.list_models = original

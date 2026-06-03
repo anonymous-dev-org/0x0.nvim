@@ -27,10 +27,12 @@ test("buildPrompt matches inline completion shape", () => {
     ],
   });
 
-  assert.match(prompt, /^Complete lua code at the cursor\./);
+  assert.match(prompt, /^Complete lua code at <\|cursor\|>\./);
   assert.match(prompt, /File: \/tmp\/example\.lua/);
   assert.match(prompt, /Project root: \/tmp\/project/);
-  assert.match(prompt, /No tools, search, markdown fences, explanation, or repeated prefix/);
+  assert.match(prompt, /Keep it short: finish the immediate local completion/);
+  assert.match(prompt, /No reasoning, analysis, plans, status text, assistant preambles, or explanations/);
+  assert.match(prompt, /No tools, search, markdown fences, XML tags, or repeated prefix/);
   assert.match(prompt, /Imports in this file:/);
   assert.match(prompt, /local M = require\("mod"\)/);
   assert.match(prompt, /Enclosing scope \(function, lines 1-3\):/);

@@ -31114,13 +31114,16 @@ function cursorContext(request) {
 function buildPrompt(request) {
   const lang = request.language ?? "code";
   const lines = [
-    `Complete ${lang} code at the cursor.`,
+    `Complete ${lang} code at <|cursor|>.`,
     `File: ${request.filepath ?? "unknown"}`,
     `Project root: ${request.cwd ?? "."}`,
     "",
     "Rules:",
-    "- Output ONLY the text to insert at <|cursor|>",
-    "- No tools, search, markdown fences, explanation, or repeated prefix",
+    "- Output only raw text to insert at <|cursor|>",
+    "- Keep it short: finish the immediate local completion",
+    "- No reasoning, analysis, plans, status text, assistant preambles, or explanations",
+    "- No tools, search, markdown fences, XML tags, or repeated prefix",
+    "- If no useful completion is obvious, output nothing",
     ""
   ];
   if (typeof request.imports === "string" && request.imports !== "") {
@@ -31145,9 +31148,9 @@ function buildPrompt(request) {
 }
 function systemPrompt() {
   return [
-    "You are an inline code completion engine.",
-    "Output only the text to insert at the cursor marker.",
-    "No markdown fences, no explanations, no repeated prefix."
+    "You are an inline code completion engine, not a chat assistant.",
+    "Think internally only if needed, but never output reasoning, analysis, plans, status text, tags, markdown, or explanations.",
+    "Output only the raw text to insert at the cursor marker."
   ].join(" ");
 }
 

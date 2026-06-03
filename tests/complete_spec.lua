@@ -386,6 +386,122 @@ describe("inline completion", function()
 		assert.is_nil(ghost.get_text())
 	end)
 
+	it("does not render tagged reasoning as ghost text", function()
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
+		completion_client.stream_completion = function(provider, request, on_chunk, on_done)
+			on_chunk("<thinking>\nI should inspect the context first.\n</thinking>\n42")
+			on_done()
+			return function() end
+		end
+
+		local complete = require("zxz.complete")
+		local ghost = require("zxz.complete.ghost")
+		local bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_set_current_buf(bufnr)
+		vim.bo[bufnr].filetype = "lua"
+		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-tagged-reasoning.lua")
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
+		vim.wo.virtualedit = "onemore"
+		vim.api.nvim_win_set_cursor(0, { 1, 14 })
+		complete._mode = function()
+			return "i"
+		end
+
+		complete._request_completion()
+
+		completion_client.stream_completion = original
+
+		assert.are.equal("42", ghost.get_text())
+	end)
+
+	it("strips think tags before rendering ghost text", function()
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
+		completion_client.stream_completion = function(provider, request, on_chunk, on_done)
+			on_chunk("<think>\nNeed the direct inserted expression.\n</think>\n42")
+			on_done()
+			return function() end
+		end
+
+		local complete = require("zxz.complete")
+		local ghost = require("zxz.complete.ghost")
+		local bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_set_current_buf(bufnr)
+		vim.bo[bufnr].filetype = "lua"
+		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-think-tag.lua")
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
+		vim.wo.virtualedit = "onemore"
+		vim.api.nvim_win_set_cursor(0, { 1, 14 })
+		complete._mode = function()
+			return "i"
+		end
+
+		complete._request_completion()
+
+		completion_client.stream_completion = original
+
+		assert.are.equal("42", ghost.get_text())
+	end)
+
+	it("strips leading reasoning lines before rendering ghost text", function()
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
+		completion_client.stream_completion = function(provider, request, on_chunk, on_done)
+			on_chunk("Reasoning: complete the assignment directly\n42")
+			on_done()
+			return function() end
+		end
+
+		local complete = require("zxz.complete")
+		local ghost = require("zxz.complete.ghost")
+		local bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_set_current_buf(bufnr)
+		vim.bo[bufnr].filetype = "lua"
+		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-reasoning-line.lua")
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
+		vim.wo.virtualedit = "onemore"
+		vim.api.nvim_win_set_cursor(0, { 1, 14 })
+		complete._mode = function()
+			return "i"
+		end
+
+		complete._request_completion()
+
+		completion_client.stream_completion = original
+
+		assert.are.equal("42", ghost.get_text())
+	end)
+
+	it("suppresses partial tagged reasoning while streaming", function()
+		local completion_client = require("zxz.core.completion_client")
+		local original = completion_client.stream_completion
+		completion_client.stream_completion = function(provider, request, on_chunk, on_done)
+			on_chunk("<thinking>\nI should inspect the context first.")
+			on_done()
+			return function() end
+		end
+
+		local complete = require("zxz.complete")
+		local ghost = require("zxz.complete.ghost")
+		local bufnr = vim.api.nvim_create_buf(false, true)
+		vim.api.nvim_set_current_buf(bufnr)
+		vim.bo[bufnr].filetype = "lua"
+		vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-partial-tagged-reasoning.lua")
+		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
+		vim.wo.virtualedit = "onemore"
+		vim.api.nvim_win_set_cursor(0, { 1, 14 })
+		complete._mode = function()
+			return "i"
+		end
+
+		complete._request_completion()
+
+		completion_client.stream_completion = original
+
+		assert.is_nil(ghost.get_text())
+	end)
+
 	it("unwraps tagged completions before rendering", function()
 		local completion_client = require("zxz.core.completion_client")
 		local original = completion_client.stream_completion
@@ -508,8 +624,9 @@ describe("inline completion", function()
 			complete = {
 				gateway = { api_key = "test-key" },
 				models = {
-					"mistral/codestral",
 					"anthropic/claude-sonnet-4.6",
+					"mistral/codestral",
+					"alibaba/qwen3-coder",
 					"openai/gpt-5.4-mini",
 				},
 			},
@@ -522,6 +639,8 @@ describe("inline completion", function()
 		end
 
 		assert.is_true(seen["mistral/codestral"])
+		assert.are.equal("mistral/codestral", choices[1])
+		assert.are.equal("alibaba/qwen3-coder", choices[2])
 		assert.is_true(seen["anthropic/claude-sonnet-4.6"])
 		assert.is_true(seen["openai/gpt-5.4-mini"])
 	end)

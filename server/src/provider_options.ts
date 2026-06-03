@@ -12,7 +12,8 @@ function modelShortName(modelId: string): string {
 }
 
 function openaiReasoningEffort(model: string): "none" | "minimal" | "low" {
-  // Codex and o-series reject reasoningEffort "none".
+  // Codex and o-series reject reasoningEffort "none"; Codex model docs list
+  // low/medium/high/xhigh, so low is the safest documented floor.
   if (model.includes("codex") || /^o\d/.test(model)) {
     return "low";
   }

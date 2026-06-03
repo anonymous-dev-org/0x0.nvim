@@ -110,6 +110,65 @@ local function extract_tagged_completion(text)
 	return text, false
 end
 
+local reasoning_tags = { "reasoning_summary", "thinking", "reasoning", "analysis", "thought", "think" }
+local reasoning_prefix_patterns = {
+	"^%s*thinking%s*[:%-]%s*",
+	"^%s*reasoning%s*[:%-]%s*",
+	"^%s*analysis%s*[:%-]%s*",
+	"^%s*thought%s*[:%-]%s*",
+}
+
+local function strip_reasoning_blocks(text)
+	local stripped = false
+	for _, tag in ipairs(reasoning_tags) do
+		while true do
+			local lower = text:lower()
+			local open_start, open_end = lower:find("<%s*" .. tag .. "[^>]*>")
+			if not open_start then
+				break
+			end
+
+			local close_start, close_end = lower:find("</%s*" .. tag .. "%s*>", open_end + 1)
+			if not close_start then
+				local before = text:sub(1, open_start - 1)
+				if vim.trim(before) == "" then
+					return "", true
+				end
+				return before, true
+			end
+
+			text = text:sub(1, open_start - 1) .. text:sub(close_end + 1)
+			stripped = true
+		end
+	end
+	return text, stripped
+end
+
+local function strip_leading_reasoning_lines(text)
+	local lines = vim.split(text or "", "\n", { plain = true })
+	local index = 1
+	local stripped = false
+	while index <= #lines do
+		local lower = lines[index]:lower()
+		local matched = false
+		for _, pattern in ipairs(reasoning_prefix_patterns) do
+			if lower:find(pattern) then
+				matched = true
+				stripped = true
+				break
+			end
+		end
+		if not matched then
+			break
+		end
+		index = index + 1
+	end
+	if not stripped then
+		return text, false
+	end
+	return table.concat(vim.list_slice(lines, index), "\n"):gsub("^[\r\n]+", ""), true
+end
+
 local function looks_like_agent_chatter(first_line)
 	local lower = vim.trim(first_line or ""):lower()
 	if lower == "" then
@@ -121,6 +180,12 @@ local function looks_like_agent_chatter(first_line)
 		"^inspecting%s",
 		"^searching%s",
 		"^reading%s",
+		"^thinking%s*[:%-]",
+		"^reasoning%s*[:%-]",
+		"^analysis%s*[:%-]",
+		"^thought%s*[:%-]",
+		"^we%s+need%s+",
+		"^i%s+need%s+",
 		"^i%s+can't",
 		"^i%s+cannot",
 		"^i%s+am%s",
@@ -223,6 +288,14 @@ local function visible_completion(text, before)
 	text = text:gsub("[%z\1-\8\11\12\14-\31\127]", "")
 	local tagged
 	text, tagged = extract_tagged_completion(text)
+	local stripped_reasoning
+	text, stripped_reasoning = strip_reasoning_blocks(text)
+	if stripped_reasoning then
+		text = text:gsub("^[\r\n]+", "")
+	end
+	local stripped_reasoning_lines
+	text, stripped_reasoning_lines = strip_leading_reasoning_lines(text)
+	stripped_reasoning = stripped_reasoning or stripped_reasoning_lines
 	if before and before ~= "" and text:sub(1, #before) == before then
 		text = text:sub(#before + 1)
 	end
@@ -232,6 +305,12 @@ local function visible_completion(text, before)
 	end
 	if vim.trim(first_line):lower():find("^let me think") then
 		return nil
+	end
+	local lower_first = vim.trim(first_line):lower()
+	for _, tag in ipairs(reasoning_tags) do
+		if lower_first:find("^</?%s*" .. tag) then
+			return nil
+		end
 	end
 	if not tagged and looks_like_agent_chatter(first_line) then
 		return nil

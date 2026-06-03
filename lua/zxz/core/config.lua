@@ -14,6 +14,18 @@ local DEFAULT_COMPLETION_MODELS = {
 	"mistral/codestral",
 }
 
+local DEFAULT_FAVORITE_COMPLETION_MODELS = {
+	"mistral/codestral",
+	"xai/grok-code-fast-1",
+	"alibaba/qwen3-coder-30b-a3b",
+	"alibaba/qwen3-coder",
+	"alibaba/qwen3-coder-plus",
+	"openai/codex-mini",
+	"openai/gpt-5.1-codex-mini",
+	"openai/gpt-5-codex",
+	"openai/gpt-5.1-codex",
+}
+
 ---@type zxz.Config
 M.defaults = {
 	request_timeout_ms = 60000,
@@ -22,6 +34,7 @@ M.defaults = {
 		enabled = true,
 		model = "mistral/codestral",
 		models = vim.deepcopy(DEFAULT_COMPLETION_MODELS),
+		favorite_models = vim.deepcopy(DEFAULT_FAVORITE_COMPLETION_MODELS),
 		gateway = {
 			api_key_env = "AI_GATEWAY_API_KEY",
 		},
@@ -92,6 +105,43 @@ function M.is_thinking_model(model)
 	return false
 end
 
+local function favorite_rank(model)
+	if type(model) ~= "string" or model == "" then
+		return nil
+	end
+	local favorites = M.current.complete and M.current.complete.favorite_models
+	if type(favorites) ~= "table" then
+		favorites = DEFAULT_FAVORITE_COMPLETION_MODELS
+	end
+	local lower_model = model:lower()
+	for index, favorite in ipairs(favorites) do
+		if type(favorite) == "string" and lower_model == favorite:lower() then
+			return index
+		end
+	end
+	return nil
+end
+
+---@param models string[]
+---@return string[]
+function M.sort_completion_models(models)
+	table.sort(models, function(a, b)
+		local a_rank = favorite_rank(a)
+		local b_rank = favorite_rank(b)
+		if a_rank and b_rank and a_rank ~= b_rank then
+			return a_rank < b_rank
+		end
+		if a_rank and not b_rank then
+			return true
+		end
+		if b_rank and not a_rank then
+			return false
+		end
+		return a < b
+	end)
+	return models
+end
+
 local function first_non_thinking_model(models)
 	for _, model in ipairs(models or {}) do
 		if type(model) == "string" and model ~= "" and not M.is_thinking_model(model) then
@@ -118,7 +168,7 @@ function M.completion_model_choices()
 		add(model)
 	end
 
-	return choices
+	return M.sort_completion_models(choices)
 end
 
 ---@param _provider nil|table ignored legacy parameter

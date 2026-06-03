@@ -35,6 +35,12 @@ const MAJOR_MODELS: MajorModelCase[] = [
     providerOptions: { openai: { reasoningEffort: "low" } },
   },
   {
+    model: "openai/codex-5.3",
+    temperature: false,
+    maxOutputTokens: 256,
+    providerOptions: { openai: { reasoningEffort: "low" } },
+  },
+  {
     model: "openai/gpt-5.1",
     temperature: false,
     maxOutputTokens: 256,

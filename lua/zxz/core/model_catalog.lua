@@ -35,7 +35,7 @@ local function read_cache()
 			cleaned[#cleaned + 1] = model
 		end
 	end
-	table.sort(cleaned)
+	config.sort_completion_models(cleaned)
 	if #cleaned == 0 then
 		return nil
 	end
@@ -54,7 +54,7 @@ local function sanitize_models(models)
 			cleaned[#cleaned + 1] = model
 		end
 	end
-	table.sort(cleaned)
+	config.sort_completion_models(cleaned)
 	return cleaned
 end
 
